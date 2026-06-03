@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: botbuilder-latam
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python app.py"
+    envVars:
+      - key: APP_SECRET
+        generateValue: true
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile

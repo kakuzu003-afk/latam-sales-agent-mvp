@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+secrets.json
+botbuilder.sqlite3
+botbuilder.sqlite3-shm
+botbuilder.sqlite3-wal
