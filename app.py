@@ -350,115 +350,169 @@ def assistant_widget():
     """
 
 
+ADMIN_CSS = """
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;background:#080c0b;color:#e2f0eb;min-height:100vh}
+a{text-decoration:none;color:inherit}
+.ash{display:grid;grid-template-columns:240px 1fr;min-height:100vh}
+/* SIDEBAR */
+.asb{background:#060a09;border-right:1px solid #1a2e28;display:flex;flex-direction:column;gap:2px;padding:0;position:sticky;top:0;height:100vh;overflow-y:auto}
+.asb-logo{display:flex;align-items:center;gap:12px;padding:20px 18px 16px;border-bottom:1px solid #1a2e28}
+.asb-logo .mk{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#00e896,#009d65);display:grid;place-items:center;font-weight:900;color:#050d0b;font-size:15px;box-shadow:0 0 20px rgba(0,232,150,.35);flex-shrink:0}
+.asb-logo-text strong{display:block;color:#ffffff;font-size:14px;font-weight:800;letter-spacing:-.01em}
+.asb-logo-text span{display:block;color:#3d6b5c;font-size:11px;font-weight:700;margin-top:1px}
+.asb-sect{padding:14px 18px 4px;color:#2a4a3e;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.1em}
+.asb-item{display:flex;align-items:center;gap:10px;padding:10px 18px;color:#7ab8a5;font-size:13px;font-weight:700;transition:.15s;border-left:2px solid transparent;cursor:pointer}
+.asb-item:hover{color:#e2f0eb;background:rgba(0,232,150,.06);border-left-color:rgba(0,232,150,.3)}
+.asb-item.on{color:#00e896;background:rgba(0,232,150,.08);border-left-color:#00e896}
+.asb-item .ic{width:20px;text-align:center;font-size:15px;flex-shrink:0}
+.asb-footer{margin-top:auto;padding:16px 18px;border-top:1px solid #1a2e28}
+.asb-user{display:flex;align-items:center;gap:10px}
+.asb-avatar{width:34px;height:34px;border-radius:999px;background:linear-gradient(135deg,#00e896,#0a5c40);display:grid;place-items:center;font-weight:900;color:#050d0b;font-size:13px;flex-shrink:0}
+.asb-user strong{display:block;color:#e2f0eb;font-size:13px;font-weight:800}
+.asb-user span{display:block;color:#3d6b5c;font-size:11px}
+/* MAIN */
+.amn{display:flex;flex-direction:column;min-height:100vh;overflow:auto}
+.atb{background:#060a09;border-bottom:1px solid #1a2e28;padding:14px 28px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:20;backdrop-filter:blur(12px)}
+.atb-left{display:flex;align-items:center;gap:14px}
+.atb-left h1{font-size:20px;font-weight:900;color:#ffffff;letter-spacing:-.02em}
+.atb-badge{background:rgba(0,232,150,.12);border:1px solid rgba(0,232,150,.3);color:#00e896;border-radius:999px;padding:3px 10px;font-size:11px;font-weight:800}
+.atb-right{display:flex;align-items:center;gap:10px}
+.atb-time{color:#3d6b5c;font-size:12px;font-weight:700}
+.ac{padding:24px 28px;flex:1}
+/* KPI GRID */
+.kg{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}
+.kc{background:#0d1512;border:1px solid #1a2e28;border-radius:14px;padding:20px;position:relative;overflow:hidden;transition:.2s}
+.kc:hover{border-color:#2a4a3e;transform:translateY(-1px)}
+.kc.hi{border-color:rgba(0,232,150,.4);box-shadow:0 0 30px rgba(0,232,150,.12)}
+.kc:before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(0,232,150,.5),transparent)}
+.kc .kl{color:#3d6b5c;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px}
+.kc .kv{font-size:36px;font-weight:950;color:#ffffff;line-height:1;letter-spacing:-.02em}
+.kc.hi .kv{color:#00e896}
+.kc .ks{color:#2a4a3e;font-size:12px;margin-top:6px;font-weight:600}
+.kc .ki{position:absolute;right:16px;top:16px;font-size:28px;opacity:.15}
+/* SECTIONS */
+.as{margin-bottom:24px}
+.ash2{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.ash2 h2{font-size:15px;font-weight:900;color:#ffffff;letter-spacing:-.01em}
+.ash2 span{color:#3d6b5c;font-size:12px;font-weight:700}
+/* CARDS */
+.ac2{background:#0d1512;border:1px solid #1a2e28;border-radius:14px;overflow:hidden}
+/* TABLE */
+.at{width:100%;border-collapse:collapse}
+.at thead tr{background:#090f0d}
+.at th{padding:11px 16px;text-align:left;font-size:11px;font-weight:900;color:#3d6b5c;text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid #1a2e28;white-space:nowrap}
+.at td{padding:14px 16px;border-bottom:1px solid #111a17;color:#b8d4cb;font-size:13px;vertical-align:middle}
+.at tr:last-child td{border-bottom:0}
+.at tr:hover td{background:rgba(0,232,150,.03)}
+.at td strong{color:#ffffff;font-size:14px;font-weight:800;display:block}
+.at td small{color:#3d6b5c;font-size:11px;display:block;margin-top:2px}
+/* BADGES */
+.pb{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:800;border:1px solid transparent}
+.p-starter{background:rgba(59,130,246,.12);color:#60a5fa;border-color:rgba(59,130,246,.25)}
+.p-pro{background:rgba(0,232,150,.12);color:#00e896;border-color:rgba(0,232,150,.25)}
+.p-agency{background:rgba(168,85,247,.12);color:#c084fc;border-color:rgba(168,85,247,.25)}
+/* STATUS */
+.sd{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700}
+.sd:before{content:'';width:6px;height:6px;border-radius:999px;flex-shrink:0}
+.sd.active:before{background:#00e896;box-shadow:0 0 8px rgba(0,232,150,.8)}
+.sd.demo:before{background:#fbbf24;box-shadow:0 0 8px rgba(251,191,36,.6)}
+.sd.inactive:before{background:#374151}
+/* USAGE BAR */
+.ub{height:4px;background:#111a17;border-radius:999px;overflow:hidden;width:100px}
+.ub div{height:100%;border-radius:999px;background:linear-gradient(90deg,#00e896,#00c97d)}
+.ub.warn div{background:linear-gradient(90deg,#fbbf24,#f97316)}
+.ub.danger div{background:linear-gradient(90deg,#ef4444,#dc2626)}
+/* BUTTONS */
+.ab{background:rgba(0,232,150,.08);border:1px solid rgba(0,232,150,.2);color:#00e896;border-radius:8px;padding:7px 13px;font-size:12px;font-weight:800;cursor:pointer;transition:.15s;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.ab:hover{background:rgba(0,232,150,.16);border-color:rgba(0,232,150,.5);color:#ffffff}
+.ab.sec{background:rgba(255,255,255,.04);border-color:#1a2e28;color:#7ab8a5}
+.ab.sec:hover{background:rgba(255,255,255,.08);border-color:#2a4a3e;color:#e2f0eb}
+.ab.dng{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.2);color:#f87171}
+.ab.dng:hover{background:rgba(239,68,68,.16);border-color:rgba(239,68,68,.4)}
+.ab.pri{background:linear-gradient(135deg,#00e896,#00a066);border-color:#00e896;color:#050d0b;font-weight:900}
+.ab.pri:hover{box-shadow:0 0 20px rgba(0,232,150,.4)}
+/* SELECTS */
+.asel{background:#090f0d;border:1px solid #1a2e28;color:#b8d4cb;border-radius:7px;padding:6px 10px;font-size:12px;font-weight:700;outline:none}
+.asel:focus{border-color:rgba(0,232,150,.4)}
+/* PLAN DIST */
+.pd{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.pdc{background:#090f0d;border:1px solid #1a2e28;border-radius:12px;padding:18px;text-align:center;transition:.2s}
+.pdc:hover{border-color:#2a4a3e}
+.pdc strong{display:block;font-size:32px;font-weight:950;color:#ffffff;letter-spacing:-.02em}
+.pdc span{display:block;color:#3d6b5c;font-size:12px;font-weight:800;margin-top:4px;text-transform:uppercase;letter-spacing:.06em}
+.pdc.s strong{color:#60a5fa}
+.pdc.p strong{color:#00e896}
+.pdc.a strong{color:#c084fc}
+/* WA STATUS */
+.wo{color:#00e896;font-weight:800;font-size:13px}
+.wf{color:#2a4a3e;font-size:13px}
+/* SYSTEM STATUS */
+.sys-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px}
+.sys-card{background:#0d1512;border:1px solid #1a2e28;border-radius:12px;padding:16px;display:flex;align-items:center;gap:12px}
+.sys-icon{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;font-size:18px;flex-shrink:0}
+.sys-icon.ok{background:rgba(0,232,150,.1);border:1px solid rgba(0,232,150,.2)}
+.sys-icon.warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.2)}
+.sys-text strong{display:block;color:#ffffff;font-size:13px;font-weight:800}
+.sys-text span{display:block;color:#3d6b5c;font-size:11px;margin-top:2px}
+@media(max-width:1024px){.ash{grid-template-columns:200px 1fr}.kg{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:768px){.ash{grid-template-columns:1fr}.asb{height:auto;position:static}.kg,.pd,.sys-grid{grid-template-columns:1fr 1fr}}
+"""
+
 def render_admin_page(handler, title, body):
     html_doc = f"""<!doctype html>
 <html lang="es">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{esc(title)} | BotBuilder Admin</title>
-  <style>{CSS}
-  body{{background:#060e0c}}
-  .admin-shell{{display:grid;grid-template-columns:220px 1fr;min-height:100vh;gap:0}}
-  .admin-sidebar{{background:linear-gradient(180deg,#071511 0%,#0a1e19 100%);border-right:1px solid rgba(34,240,183,.18);padding:20px 14px;display:flex;flex-direction:column;gap:6px;position:sticky;top:0;height:100vh;overflow:auto}}
-  .admin-brand{{display:flex;align-items:center;gap:10px;padding:8px 6px 20px;border-bottom:1px solid rgba(34,240,183,.14);margin-bottom:6px}}
-  .admin-brand .mark{{width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,#1fc28e,#0d7e5c);display:grid;place-items:center;font-weight:900;color:white;font-size:14px;box-shadow:0 0 18px rgba(34,240,183,.4)}}
-  .admin-brand strong{{display:block;color:#f2fffb;font-size:13px}}
-  .admin-brand span{{display:block;color:#5ab89c;font-size:11px;font-weight:700}}
-  .admin-nav-section{{color:#4a7a6d;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;padding:10px 8px 4px;margin-top:6px}}
-  .admin-nav-item{{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:8px;color:#a8d8ca;font-size:13px;font-weight:800;text-decoration:none;transition:.15s ease;border:1px solid transparent}}
-  .admin-nav-item:hover,.admin-nav-item.active{{background:rgba(34,240,183,.1);border-color:rgba(34,240,183,.22);color:#f2fffb}}
-  .admin-nav-item .icon{{width:18px;text-align:center;font-size:14px}}
-  .admin-main{{background:#0a1612;overflow:auto}}
-  .admin-topbar{{background:rgba(6,14,12,.9);border-bottom:1px solid rgba(34,240,183,.14);padding:14px 24px;display:flex;align-items:center;justify-content:space-between;backdrop-filter:blur(10px);position:sticky;top:0;z-index:10}}
-  .admin-topbar h1{{margin:0;font-size:22px;color:#f2fffb;font-weight:900}}
-  .admin-topbar span{{color:#5ab89c;font-size:13px}}
-  .admin-content{{padding:22px 24px}}
-  .admin-kpi-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}}
-  .kpi-card{{background:linear-gradient(145deg,rgba(14,42,35,.92),rgba(8,22,18,.96));border:1px solid rgba(34,240,183,.22);border-radius:12px;padding:18px;position:relative;overflow:hidden}}
-  .kpi-card:before{{content:"";position:absolute;inset:0;background:radial-gradient(180px 80px at 50% -20px,rgba(34,240,183,.18),transparent 65%);pointer-events:none}}
-  .kpi-card>*{{position:relative}}
-  .kpi-label{{color:#5ab89c;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}}
-  .kpi-value{{font-size:34px;font-weight:950;color:#f2fffb;line-height:1}}
-  .kpi-sub{{color:#4a7a6d;font-size:12px;margin-top:4px}}
-  .kpi-card.highlight{{border-color:rgba(34,240,183,.55);box-shadow:0 0 28px rgba(34,240,183,.2)}}
-  .kpi-card.highlight .kpi-value{{color:#65ffd0}}
-  .admin-section{{margin-bottom:24px}}
-  .admin-section-header{{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}}
-  .admin-section-title{{color:#f2fffb;font-size:16px;font-weight:900;margin:0}}
-  .admin-card{{background:linear-gradient(145deg,rgba(14,42,35,.88),rgba(8,22,18,.94));border:1px solid rgba(34,240,183,.18);border-radius:12px;overflow:hidden}}
-  .admin-table{{width:100%;border-collapse:collapse}}
-  .admin-table th{{background:rgba(34,240,183,.08);color:#65ffd0;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;padding:10px 14px;text-align:left;border-bottom:1px solid rgba(34,240,183,.14)}}
-  .admin-table td{{padding:12px 14px;border-bottom:1px solid rgba(34,240,183,.07);color:#c8e8de;vertical-align:middle}}
-  .admin-table tr:last-child td{{border-bottom:0}}
-  .admin-table tr:hover td{{background:rgba(34,240,183,.04)}}
-  .admin-table small{{display:block;color:#4a7a6d;font-size:11px;margin-top:2px}}
-  .admin-table strong{{color:#f2fffb}}
-  .plan-badge{{display:inline-flex;border-radius:999px;padding:4px 9px;font-size:11px;font-weight:900;border:1px solid transparent}}
-  .plan-starter{{background:rgba(53,167,255,.15);color:#7ec8ff;border-color:rgba(53,167,255,.3)}}
-  .plan-pro{{background:rgba(34,240,183,.15);color:#65ffd0;border-color:rgba(34,240,183,.3)}}
-  .plan-agency{{background:rgba(170,130,255,.15);color:#c4a3ff;border-color:rgba(170,130,255,.3)}}
-  .status-dot{{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:800}}
-  .status-dot:before{{content:"";width:7px;height:7px;border-radius:999px;display:inline-block}}
-  .status-active:before{{background:#65ffd0;box-shadow:0 0 8px rgba(34,240,183,.8)}}
-  .status-demo:before{{background:#f9c74f;box-shadow:0 0 8px rgba(249,199,79,.6)}}
-  .status-inactive:before{{background:#666}}
-  .wa-status-on{{color:#65ffd0}}.wa-status-off{{color:#4a7a6d}}
-  .usage-bar-dark{{height:5px;background:rgba(34,240,183,.12);border-radius:999px;overflow:hidden;min-width:80px}}
-  .usage-bar-dark div{{height:100%;border-radius:999px;background:linear-gradient(90deg,#1fc28e,#65ffd0)}}
-  .usage-bar-dark.warn div{{background:linear-gradient(90deg,#f9c74f,#f4a261)}}
-  .usage-bar-dark.danger div{{background:linear-gradient(90deg,#e05050,#ff8a8a)}}
-  .admin-select{{background:rgba(8,22,18,.9);border:1px solid rgba(34,240,183,.28);color:#c8e8de;border-radius:6px;padding:5px 8px;font-size:12px;font-weight:800}}
-  .admin-btn{{background:rgba(34,240,183,.1);border:1px solid rgba(34,240,183,.28);color:#65ffd0;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:900;cursor:pointer;min-height:28px;transition:.15s ease}}
-  .admin-btn:hover{{background:rgba(34,240,183,.2);border-color:rgba(34,240,183,.6)}}
-  .admin-btn.danger{{background:rgba(224,80,80,.1);border-color:rgba(224,80,80,.3);color:#ff9898}}
-  .mini-chart{{display:flex;align-items:flex-end;gap:3px;height:40px}}
-  .mini-chart div{{flex:1;background:rgba(34,240,183,.35);border-radius:3px 3px 0 0;min-width:8px;transition:.2s ease}}
-  .activity-feed{{display:grid;gap:8px;max-height:320px;overflow:auto;padding:14px}}
-  .activity-item{{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:rgba(34,240,183,.05);border:1px solid rgba(34,240,183,.1);border-radius:8px}}
-  .activity-dot{{width:8px;height:8px;border-radius:999px;margin-top:5px;flex-shrink:0}}
-  .activity-item p,.activity-item small{{margin:0}}
-  .activity-item p{{color:#c8e8de;font-size:13px}}
-  .activity-item small{{color:#4a7a6d;font-size:11px;margin-top:2px;display:block}}
-  .plan-dist{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}
-  .plan-dist-card{{background:rgba(34,240,183,.05);border:1px solid rgba(34,240,183,.12);border-radius:10px;padding:14px;text-align:center}}
-  .plan-dist-card strong{{display:block;font-size:28px;color:#f2fffb}}
-  .plan-dist-card span{{color:#4a7a6d;font-size:12px;font-weight:800}}
-  .admin-two-col{{display:grid;grid-template-columns:1fr 1fr;gap:16px}}
-  .admin-three-col{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}}
-  @media(max-width:900px){{.admin-shell{{grid-template-columns:1fr}}.admin-sidebar{{height:auto;position:static}}.admin-kpi-grid,.admin-two-col,.admin-three-col,.plan-dist{{grid-template-columns:1fr 1fr}}}}
-  </style>
+  <title>{esc(title)} | Admin</title>
+  <style>{ADMIN_CSS}</style>
 </head>
 <body>
-<div class="admin-shell">
-  <aside class="admin-sidebar">
-    <div class="admin-brand">
-      <div class="mark">IA</div>
-      <div><strong>BotBuilder LATAM</strong><span>Panel de administrador</span></div>
-    </div>
-    <span class="admin-nav-section">Sistema</span>
-    <a class="admin-nav-item {'active' if '/admin' in handler.path else ''}" href="/admin"><span class="icon">📊</span>Overview</a>
-    <span class="admin-nav-section">Clientes</span>
-    <a class="admin-nav-item" href="/admin#clientes"><span class="icon">👥</span>Clientes</a>
-    <a class="admin-nav-item" href="/admin#conexiones"><span class="icon">📱</span>WhatsApp</a>
-    <span class="admin-nav-section">Plataforma</span>
-    <a class="admin-nav-item" href="/dashboard"><span class="icon">🏠</span>Mi cuenta</a>
-    <a class="admin-nav-item" href="/logout"><span class="icon">🚪</span>Salir</a>
-  </aside>
-  <div class="admin-main">
-    <div class="admin-topbar">
-      <div>
-        <h1>{esc(title)}</h1>
-        <span>{time.strftime('%d %b %Y, %H:%M')}</span>
+<div class="ash">
+  <aside class="asb">
+    <div class="asb-logo">
+      <div class="mk">IA</div>
+      <div class="asb-logo-text">
+        <strong>BotBuilder LATAM</strong>
+        <span>Admin Panel</span>
       </div>
-      <a class="admin-btn" href="/dashboard">← Volver a mi cuenta</a>
     </div>
-    <div class="admin-content">
+    <span class="asb-sect">Sistema</span>
+    <a class="asb-item on" href="/admin"><span class="ic">📊</span> Overview</a>
+    <span class="asb-sect">Clientes</span>
+    <a class="asb-item" href="/admin#clientes"><span class="ic">👥</span> Clientes</a>
+    <a class="asb-item" href="/admin#conexiones"><span class="ic">📱</span> WhatsApp</a>
+    <a class="asb-item" href="/admin#planes"><span class="ic">💳</span> Planes & MRR</a>
+    <span class="asb-sect">Plataforma</span>
+    <a class="asb-item" href="/dashboard"><span class="ic">🏠</span> Mi cuenta</a>
+    <div class="asb-footer">
+      <div class="asb-user">
+        <div class="asb-avatar">A</div>
+        <div>
+          <strong>Administrador</strong>
+          <span>Control total</span>
+        </div>
+      </div>
+      <a class="asb-item" href="/logout" style="margin-top:10px;border-radius:8px"><span class="ic">🚪</span> Cerrar sesión</a>
+    </div>
+  </aside>
+  <div class="amn">
+    <div class="atb">
+      <div class="atb-left">
+        <h1>{esc(title)}</h1>
+        <span class="atb-badge">● Sistema activo</span>
+      </div>
+      <div class="atb-right">
+        <span class="atb-time">{time.strftime('%d %b %Y · %H:%M')}</span>
+        <a class="ab sec" href="/dashboard">← Mi cuenta</a>
+      </div>
+    </div>
+    <div class="ac">
       {body}
     </div>
   </div>
 </div>
-<script>{JS}</script>
 </body>
 </html>"""
     payload = html_doc.encode("utf-8")
@@ -1821,143 +1875,88 @@ class App(BaseHTTPRequestHandler):
         active_users = sum(1 for u in user_stats if u["msgs_month"] > 0)
         conversion_rate = round(active_users / total_users * 100) if total_users else 0
 
-        plan_dist_html = "".join([
-            f'<div class="plan-dist-card"><strong>{plan_counts.get(p, 0)}</strong><span>{p.title()}</span></div>'
-            for p in ["starter", "pro", "agency"]
-        ])
+        plan_dist_html = (
+            f'<div class="pdc s"><strong>{plan_counts.get("starter",0)}</strong><span>Starter</span></div>'
+            f'<div class="pdc p"><strong>{plan_counts.get("pro",0)}</strong><span>Pro</span></div>'
+            f'<div class="pdc a"><strong>{plan_counts.get("agency",0)}</strong><span>Agency</span></div>'
+        )
 
         user_rows = ""
         for u in user_stats:
-            plan_cls = f"plan-{u['plan']}"
-            status_cls = f"status-{u['sub_status']}"
+            pcls = f"p-{u['plan']}"
+            scls = u["sub_status"]
             usage_pct = min(100, round(u["msgs_month"] / u["message_limit"] * 100)) if u["message_limit"] else 0
-            bar_cls = "danger" if usage_pct >= 90 else ("warn" if usage_pct >= 70 else "")
-            wa_html = f'<span class="wa-status-on">✓ {u["wa_connected"]}</span>' if u["wa_connected"] else '<span class="wa-status-off">—</span>'
-            user_rows += f"""
-            <tr>
-              <td>
-                <strong>{esc(u["name"])}</strong>
-                <small>{esc(u["email"])}</small>
-                <small>ID #{u["id"]} · Registro {time.strftime("%d/%m/%Y", time.localtime(u["created_at"]))}</small>
-              </td>
-              <td><span class="plan-badge {plan_cls}">{u["plan"].title()}</span></td>
-              <td><span class="status-dot {status_cls}">{u["sub_status"].title()}</span></td>
+            barcls = "danger" if usage_pct >= 90 else ("warn" if usage_pct >= 70 else "")
+            wa_html = f'<span class="wo">✓ {u["wa_connected"]}</span>' if u["wa_connected"] else '<span class="wf">—</span>'
+            user_rows += f"""<tr>
+              <td><strong>{esc(u["name"])}</strong><small>{esc(u["email"])}</small><small>#{u["id"]} · {time.strftime("%d/%m/%Y", time.localtime(u["created_at"]))}</small></td>
+              <td><span class="pb {pcls}">{u["plan"].title()}</span></td>
+              <td><span class="sd {scls}">{u["sub_status"].title()}</span></td>
               <td>{wa_html}</td>
-              <td>{u["agents"]}/{u["agent_limit"]}</td>
-              <td>
-                <div class="usage-bar-dark {bar_cls}"><div style="width:{usage_pct}%"></div></div>
-                <small style="color:#4a7a6d">{u["msgs_month"]:,}/{u["message_limit"]:,} msgs</small>
-              </td>
-              <td>{u["leads"]}</td>
-              <td>
-                <form method="post" action="/admin/set-plan" style="display:flex;gap:5px;align-items:center">
-                  <input type="hidden" name="target_user_id" value="{u["id"]}">
-                  <select name="plan" class="admin-select">
-                    {"".join(f'<option value="{p}" {"selected" if p == u["plan"] else ""}>{p.title()}</option>' for p in ["starter","pro","agency"])}
-                  </select>
-                  <button class="admin-btn" type="submit">Aplicar</button>
-                </form>
-              </td>
+              <td style="color:#b8d4cb">{u["agents"]}<span style="color:#2a4a3e">/{u["agent_limit"]}</span></td>
+              <td><div class="ub {barcls}"><div style="width:{usage_pct}%"></div></div><small style="color:#3d6b5c;margin-top:4px">{u["msgs_month"]:,}/{u["message_limit"]:,}</small></td>
+              <td style="color:#b8d4cb">{u["leads"]}</td>
+              <td><form method="post" action="/admin/set-plan" style="display:flex;gap:6px;align-items:center">
+                <input type="hidden" name="target_user_id" value="{u["id"]}">
+                <select name="plan" class="asel">{"".join(f'<option value="{p}" {"selected" if p==u["plan"] else ""}>{p.title()}</option>' for p in ["starter","pro","agency"])}</select>
+                <button class="ab" type="submit">Aplicar</button>
+              </form></td>
             </tr>"""
 
         wa_rows = ""
         for c in wa_connections_all[:20]:
             owner = next((u for u in user_stats if u["id"] == c["user_id"]), None)
             owner_name = owner["name"] if owner else f"User #{c['user_id']}"
-            status_cls = "wa-status-on" if c["status"] == "active" else "wa-status-off"
-            wa_rows += f"""
-            <tr>
+            is_active = c["status"] == "active"
+            wa_rows += f"""<tr>
               <td><strong>{esc(c["phone_number"] or "—")}</strong><small>{esc(c["display_name"] or "—")}</small></td>
-              <td><small style="color:#4a7a6d">{esc(c["phone_number_id"])}</small></td>
-              <td><span class="{status_cls}">{'● Activo' if c["status"] == "active" else '○ Inactivo'}</span></td>
-              <td>{esc(owner_name)}</td>
-              <td>{time.strftime("%d/%m/%Y", time.localtime(c["created_at"]))}</td>
+              <td><small style="color:#3d6b5c;font-family:monospace">{esc(c["phone_number_id"])}</small></td>
+              <td>{"<span class='wo'>● Activo</span>" if is_active else "<span class='wf'>○ Inactivo</span>"}</td>
+              <td style="color:#b8d4cb">{esc(owner_name)}</td>
+              <td style="color:#3d6b5c">{time.strftime("%d/%m/%Y", time.localtime(c["created_at"]))}</td>
             </tr>"""
         if not wa_rows:
-            wa_rows = '<tr><td colspan="5" style="color:#4a7a6d;text-align:center;padding:20px">No hay conexiones de WhatsApp aún</td></tr>'
+            wa_rows = '<tr><td colspan="5" style="color:#2a4a3e;text-align:center;padding:24px;font-size:13px">No hay conexiones de WhatsApp registradas aún</td></tr>'
 
         body = f"""
-        <div class="admin-kpi-grid">
-          <div class="kpi-card highlight">
-            <div class="kpi-label">MRR Potencial</div>
-            <div class="kpi-value">${mrr_potential:,}</div>
-            <div class="kpi-sub">USD / mes si todos pagan</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-label">Clientes totales</div>
-            <div class="kpi-value">{total_users}</div>
-            <div class="kpi-sub">+{new_users_week} esta semana</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-label">Usuarios activos</div>
-            <div class="kpi-value">{active_users}</div>
-            <div class="kpi-sub">{conversion_rate}% activación</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-label">WhatsApp conectados</div>
-            <div class="kpi-value">{total_connections}</div>
-            <div class="kpi-sub">de {total_users} clientes</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-label">Mensajes este mes</div>
-            <div class="kpi-value">{messages_this_month:,}</div>
-            <div class="kpi-sub">{total_messages:,} histórico</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-label">Vendedores IA</div>
-            <div class="kpi-value">{total_agents}</div>
-            <div class="kpi-sub">en {total_users} cuentas</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-label">Conversaciones</div>
-            <div class="kpi-value">{total_convs:,}</div>
-            <div class="kpi-sub">+{new_convs_week} esta semana</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-label">Oportunidades</div>
-            <div class="kpi-value">{total_leads:,}</div>
-            <div class="kpi-sub">leads detectados</div>
-          </div>
+        <div class="sys-grid">
+          <div class="sys-card"><div class="sys-icon ok">🚀</div><div class="sys-text"><strong>Servidor activo</strong><span>Python HTTP · Puerto 8765</span></div></div>
+          <div class="sys-card"><div class="sys-icon ok">🤖</div><div class="sys-text"><strong>IA operativa</strong><span>Groq LLM conectado</span></div></div>
+          <div class="sys-card"><div class="sys-icon {'ok' if total_connections > 0 else 'warn'}">📱</div><div class="sys-text"><strong>{total_connections} WhatsApp activos</strong><span>Meta Business API</span></div></div>
         </div>
 
-        <div class="admin-section">
-          <div class="admin-section-header">
-            <h2 class="admin-section-title">Distribución de planes</h2>
-          </div>
-          <div class="admin-card" style="padding:16px">
-            <div class="plan-dist">{plan_dist_html}</div>
-          </div>
+        <div class="kg">
+          <div class="kc hi"><span class="ki">💰</span><div class="kl">MRR Potencial</div><div class="kv">${mrr_potential:,}</div><div class="ks">USD/mes · si todos pagan</div></div>
+          <div class="kc"><span class="ki">👥</span><div class="kl">Clientes</div><div class="kv">{total_users}</div><div class="ks">+{new_users_week} esta semana</div></div>
+          <div class="kc"><span class="ki">⚡</span><div class="kl">Activación</div><div class="kv">{active_users}</div><div class="ks">{conversion_rate}% del total</div></div>
+          <div class="kc"><span class="ki">📱</span><div class="kl">WhatsApp</div><div class="kv">{total_connections}</div><div class="ks">números conectados</div></div>
+          <div class="kc"><span class="ki">💬</span><div class="kl">Msgs este mes</div><div class="kv">{messages_this_month:,}</div><div class="ks">{total_messages:,} histórico</div></div>
+          <div class="kc"><span class="ki">🤖</span><div class="kl">Vendedores IA</div><div class="kv">{total_agents}</div><div class="ks">en {total_users} cuentas</div></div>
+          <div class="kc"><span class="ki">🗣️</span><div class="kl">Conversaciones</div><div class="kv">{total_convs:,}</div><div class="ks">+{new_convs_week} esta semana</div></div>
+          <div class="kc"><span class="ki">🎯</span><div class="kl">Oportunidades</div><div class="kv">{total_leads:,}</div><div class="ks">leads detectados</div></div>
         </div>
 
-        <div class="admin-section" id="clientes">
-          <div class="admin-section-header">
-            <h2 class="admin-section-title">Clientes ({total_users})</h2>
-          </div>
-          <div class="admin-card">
-            <div style="overflow-x:auto">
-            <table class="admin-table">
-              <thead>
-                <tr>
-                  <th>Cliente</th><th>Plan</th><th>Estado</th><th>WhatsApp</th>
-                  <th>Agentes</th><th>Uso mensual</th><th>Leads</th><th>Cambiar plan</th>
-                </tr>
-              </thead>
+        <div class="as" id="planes">
+          <div class="ash2"><h2>Distribución de planes</h2><span>MRR potencial: ${mrr_potential:,} USD/mes</span></div>
+          <div class="ac2" style="padding:18px"><div class="pd">{plan_dist_html}</div></div>
+        </div>
+
+        <div class="as" id="clientes">
+          <div class="ash2"><h2>Clientes ({total_users})</h2><span>{active_users} activos · {total_users - active_users} sin actividad</span></div>
+          <div class="ac2"><div style="overflow-x:auto">
+            <table class="at">
+              <thead><tr><th>Cliente</th><th>Plan</th><th>Estado</th><th>WhatsApp</th><th>Agentes</th><th>Uso mensual</th><th>Leads</th><th>Acciones</th></tr></thead>
               <tbody>{user_rows}</tbody>
             </table>
-            </div>
-          </div>
+          </div></div>
         </div>
 
-        <div class="admin-section" id="conexiones">
-          <div class="admin-section-header">
-            <h2 class="admin-section-title">Conexiones WhatsApp</h2>
-          </div>
-          <div class="admin-card">
-            <table class="admin-table">
-              <thead><tr><th>Número</th><th>Phone Number ID</th><th>Estado</th><th>Cliente</th><th>Conectado</th></tr></thead>
-              <tbody>{wa_rows}</tbody>
-            </table>
-          </div>
+        <div class="as" id="conexiones">
+          <div class="ash2"><h2>Conexiones WhatsApp</h2><span>{total_connections} activas</span></div>
+          <div class="ac2"><table class="at">
+            <thead><tr><th>Número</th><th>Phone Number ID</th><th>Estado</th><th>Cliente</th><th>Fecha</th></tr></thead>
+            <tbody>{wa_rows}</tbody>
+          </table></div>
         </div>
         """
         render_admin_page(self, "Admin Dashboard", body)
