@@ -57,7 +57,10 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY") or LOCAL_SECRETS.get("GROQ_API_KEY
 GROQ_MODEL = os.environ.get("GROQ_MODEL") or LOCAL_SECRETS.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 META_WEBHOOK_TOKEN = os.environ.get("META_WEBHOOK_TOKEN") or LOCAL_SECRETS.get("META_WEBHOOK_TOKEN", "")
 META_ACCESS_TOKEN = os.environ.get("META_ACCESS_TOKEN") or LOCAL_SECRETS.get("META_ACCESS_TOKEN", "")
+META_APP_ID = os.environ.get("META_APP_ID") or LOCAL_SECRETS.get("META_APP_ID", "")
+META_APP_SECRET = os.environ.get("META_APP_SECRET") or LOCAL_SECRETS.get("META_APP_SECRET", "")
 META_API_VERSION = "v20.0"
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL") or LOCAL_SECRETS.get("ADMIN_EMAIL", "")
 
 
 def db():
@@ -165,6 +168,19 @@ def init_db():
                 created_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS whatsapp_connections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                waba_id TEXT NOT NULL,
+                phone_number_id TEXT NOT NULL,
+                phone_number TEXT NOT NULL,
+                display_name TEXT DEFAULT '',
+                access_token_enc TEXT NOT NULL,
+                status TEXT DEFAULT 'active',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
             CREATE INDEX IF NOT EXISTS idx_agents_user_updated ON agents(user_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_faqs_agent ON faqs(agent_id);
@@ -172,6 +188,8 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_leads_agent_status_created ON leads(agent_id, status, created_at);
             CREATE INDEX IF NOT EXISTS idx_leads_conversation ON leads(conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_wa_connections_user ON whatsapp_connections(user_id);
+            CREATE INDEX IF NOT EXISTS idx_wa_connections_phone ON whatsapp_connections(phone_number_id);
             """
         )
         for sql in [
@@ -183,6 +201,7 @@ def init_db():
             "ALTER TABLE leads ADD COLUMN notes TEXT DEFAULT ''",
             "ALTER TABLE agents ADD COLUMN meta_phone_id TEXT DEFAULT ''",
             "ALTER TABLE agents ADD COLUMN meta_access_token TEXT DEFAULT ''",
+            "ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0",
         ]:
             try:
                 conn.execute(sql)
@@ -338,13 +357,16 @@ def render_page(handler, title, body, user=None, wide=False, public_nav=False):
         def nav_item(href, label):
             active = current_path == href or (href != "/dashboard" and current_path.startswith(href))
             return f'<a class="nav-pill {"active" if active else ""}" href="{href}">{label}</a>'
+        admin_link = f'{nav_item("/admin", "⚙ Admin")}' if (user["email"] == ADMIN_EMAIL or user.get("is_admin")) else ""
         user_nav = f"""
         {nav_item("/dashboard", "Control")}
         {nav_item("/agents/new", "Nuevo vendedor")}
+        {nav_item("/connect/whatsapp", "Conectar WhatsApp")}
         {nav_item("/inbox", "Bandeja comercial")}
         {nav_item("/leads", "Oportunidades")}
         {nav_item("/conversations", "Historial")}
         {nav_item("/billing", "Planes")}
+        {admin_link}
         <a class="nav-pill logout" href="/logout">Salir</a>
         """
     elif public_nav:
@@ -926,6 +948,98 @@ def get_base_url(handler):
     return f"{scheme}://{host}"
 
 
+def encrypt_token(plaintext):
+    """XOR-cipher + HMAC-SHA256 integrity. No external deps."""
+    if not plaintext:
+        return ""
+    key = SECRET.encode()
+    data = plaintext.encode("utf-8")
+    xored = bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+    sig = hmac.new(key, xored, hashlib.sha256).digest()
+    import base64
+    return base64.b64encode(sig + xored).decode("ascii")
+
+
+def decrypt_token(ciphertext):
+    """Decrypt a token encrypted with encrypt_token."""
+    if not ciphertext:
+        return ""
+    try:
+        import base64
+        raw = base64.b64decode(ciphertext.encode("ascii"))
+        sig, xored = raw[:32], raw[32:]
+        key = SECRET.encode()
+        expected = hmac.new(key, xored, hashlib.sha256).digest()
+        if not hmac.compare_digest(sig, expected):
+            return ""
+        return bytes(b ^ key[i % len(key)] for i, b in enumerate(xored)).decode("utf-8")
+    except Exception:
+        return ""
+
+
+def verify_meta_signature(body_bytes, signature_header):
+    """Validates X-Hub-Signature-256 from Meta webhooks."""
+    secret = META_APP_SECRET or SECRET
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+    expected = "sha256=" + hmac.new(secret.encode(), body_bytes, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature_header, expected)
+
+
+def exchange_code_for_token(code):
+    """Exchanges a Meta Embedded Signup code for an access token."""
+    if not META_APP_ID or not META_APP_SECRET:
+        return None
+    req = urllib.request.Request(
+        f"https://graph.facebook.com/{META_API_VERSION}/oauth/access_token",
+        data=urllib.parse.urlencode({
+            "client_id": META_APP_ID,
+            "client_secret": META_APP_SECRET,
+            "code": code,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as res:
+            return json.loads(res.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def get_waba_phone_numbers(access_token, waba_id):
+    """Returns list of phone numbers registered in a WABA."""
+    req = urllib.request.Request(
+        f"https://graph.facebook.com/{META_API_VERSION}/{waba_id}/phone_numbers?fields=id,display_phone_number,verified_name,status&access_token={urllib.parse.quote(access_token)}",
+        headers={"Content-Type": "application/json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as res:
+            data = json.loads(res.read().decode("utf-8"))
+            return data.get("data", [])
+    except Exception:
+        return []
+
+
+def get_user_wabas(access_token):
+    """Returns WhatsApp Business Accounts accessible by the token."""
+    req = urllib.request.Request(
+        f"https://graph.facebook.com/{META_API_VERSION}/me/businesses?fields=id,name,whatsapp_business_accounts{{id,name}}&access_token={urllib.parse.quote(access_token)}",
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as res:
+            data = json.loads(res.read().decode("utf-8"))
+            wabas = []
+            for biz in data.get("data", []):
+                for waba in (biz.get("whatsapp_business_accounts") or {}).get("data", []):
+                    wabas.append({"waba_id": waba["id"], "waba_name": waba.get("name", "")})
+            return wabas
+    except Exception:
+        return []
+
+
 def send_whatsapp_message(phone_number_id, access_token, to, text):
     """Sends a text message via the Meta WhatsApp Business API."""
     token = access_token or META_ACCESS_TOKEN
@@ -1058,6 +1172,14 @@ class App(BaseHTTPRequestHandler):
                     self.send_error(404)
                     return
                 self.page_conversation_detail(user, conv_id)
+        elif path == "/connect/whatsapp":
+            user = require_user(self)
+            if user:
+                self.page_connect_whatsapp(user)
+        elif path == "/admin":
+            user = require_user(self)
+            if user:
+                self.page_admin(user)
         else:
             self.send_error(404)
 
@@ -1372,6 +1494,267 @@ class App(BaseHTTPRequestHandler):
         """
         render_page(self, "Términos de Servicio", body, None, wide=False, public_nav=True)
 
+    def page_connect_whatsapp(self, user):
+        base = get_base_url(self)
+        with db() as conn:
+            connections = conn.execute(
+                "SELECT * FROM whatsapp_connections WHERE user_id=? ORDER BY created_at DESC",
+                (user["id"],),
+            ).fetchall()
+        conn_rows = ""
+        for c in connections:
+            status_badge = f'<span class="badge {"active" if c["status"] == "active" else "inactive"}">{esc(c["status"])}</span>'
+            conn_rows += f"""
+            <article class="card wa-conn-card">
+              <div class="wa-conn-info">
+                <strong>{esc(c["phone_number"])} — {esc(c["display_name"] or "Sin nombre")}</strong>
+                <span>WABA ID: {esc(c["waba_id"])} · Phone ID: {esc(c["phone_number_id"])}</span>
+                {status_badge}
+              </div>
+              <form method="post" action="/api/connect/whatsapp/disconnect" style="display:inline">
+                <input type="hidden" name="connection_id" value="{c['id']}">
+                <button class="btn danger" type="submit">Desconectar</button>
+              </form>
+            </article>"""
+        if not conn_rows:
+            conn_rows = '<p class="hint-line">No tienes ningún número de WhatsApp conectado todavía.</p>'
+
+        app_id = META_APP_ID or ""
+        embedded_signup_available = "true" if app_id else "false"
+
+        body = f"""
+        <section class="page-head">
+          <div>
+            <p class="eyebrow">Integraciones</p>
+            <h1>Conectar WhatsApp Business</h1>
+            <p>Conecta tu cuenta de WhatsApp Business para que el vendedor IA responda mensajes automáticamente. Tus clientes escriben a tu número y el bot responde.</p>
+          </div>
+        </section>
+
+        <div class="connect-grid">
+          <article class="card connect-card">
+            <div class="connect-header">
+              <span class="connect-icon">📱</span>
+              <div>
+                <strong>WhatsApp Business API</strong>
+                <span>Autoriza tu cuenta con Meta en un clic</span>
+              </div>
+            </div>
+            <p class="hint-line">Al hacer clic en "Conectar WhatsApp" se abrirá una ventana de Meta donde autorizas el acceso a tu cuenta de WhatsApp Business. El proceso toma menos de 2 minutos.</p>
+            <div class="connect-steps">
+              <div><span>1</span><p>Haz clic en "Conectar WhatsApp"</p></div>
+              <div><span>2</span><p>Inicia sesión con tu cuenta de Facebook/Meta</p></div>
+              <div><span>3</span><p>Selecciona tu WhatsApp Business Account</p></div>
+              <div><span>4</span><p>Autoriza el acceso — listo</p></div>
+            </div>
+            <div id="connectBtn">
+              {"<button class='btn primary big-cta' onclick='launchEmbeddedSignup()'>Conectar WhatsApp</button>" if app_id else "<div class='alert-warning'>La integración de Embedded Signup estará disponible cuando Meta apruebe los permisos avanzados. Mientras tanto, configura el Phone Number ID y Access Token manualmente en tu agente.</div>"}
+            </div>
+            <div id="connectStatus" style="margin-top:12px"></div>
+          </article>
+
+          <article class="card">
+            <h2>Números conectados</h2>
+            {conn_rows}
+          </article>
+        </div>
+
+        <script>
+        {'var META_APP_ID = "' + app_id + '";' if app_id else ''}
+        function launchEmbeddedSignup() {{
+          if(typeof FB === "undefined") {{ showStatus("Cargando SDK de Meta...", "info"); return; }}
+          FB.login(function(response) {{
+            if(response.authResponse) {{
+              var code = response.authResponse.code;
+              showStatus("Conectando...", "info");
+              fetch("/api/connect/whatsapp", {{
+                method: "POST",
+                headers: {{"Content-Type": "application/json"}},
+                body: JSON.stringify({{code: code}})
+              }})
+              .then(r => r.json())
+              .then(d => {{
+                if(d.ok) {{ showStatus("¡WhatsApp conectado! Recargando...", "success"); setTimeout(() => location.reload(), 1500); }}
+                else {{ showStatus("Error: " + (d.error || "Intenta de nuevo"), "error"); }}
+              }})
+              .catch(() => showStatus("Error de conexión. Intenta de nuevo.", "error"));
+            }} else {{
+              showStatus("Autorización cancelada.", "info");
+            }}
+          }}, {{
+            scope: "whatsapp_business_management,whatsapp_business_messaging",
+            extras: {{setup: {{}}, featureType: "whatsapp_embedded_signup", sessionInfoVersion: "3"}}
+          }});
+        }}
+        function showStatus(msg, type) {{
+          var el = document.getElementById("connectStatus");
+          el.innerHTML = "<div class='alert alert-" + type + "'>" + msg + "</div>";
+        }}
+        </script>
+        {"<script async defer src='https://connect.facebook.net/es_LA/sdk.js'></script>" if app_id else ""}
+        {"<script>window.fbAsyncInit = function() {{ FB.init({{ appId: '" + app_id + "', version: 'v20.0' }}); }};</script>" if app_id else ""}
+        """
+        render_page(self, "Conectar WhatsApp", body, user, wide=True)
+
+    def api_connect_whatsapp(self, user):
+        try:
+            data = json.loads(self.read_body().decode("utf-8"))
+        except json.JSONDecodeError:
+            json_response(self, {"error": "JSON inválido"}, 400)
+            return
+        code = data.get("code", "")
+        if not code:
+            json_response(self, {"error": "Código requerido"}, 400)
+            return
+        token_data = exchange_code_for_token(code)
+        if not token_data or "access_token" not in token_data:
+            json_response(self, {"error": "No se pudo obtener el token de Meta"}, 400)
+            return
+        access_token = token_data["access_token"]
+        wabas = get_user_wabas(access_token)
+        if not wabas:
+            json_response(self, {"error": "No se encontró ninguna cuenta de WhatsApp Business"}, 400)
+            return
+        waba = wabas[0]
+        waba_id = waba["waba_id"]
+        phones = get_waba_phone_numbers(access_token, waba_id)
+        if not phones:
+            json_response(self, {"error": "No se encontraron números de teléfono en la cuenta"}, 400)
+            return
+        encrypted = encrypt_token(access_token)
+        with db() as conn:
+            for phone in phones:
+                phone_id = phone.get("id", "")
+                phone_number = phone.get("display_phone_number", "")
+                display_name = phone.get("verified_name", "")
+                existing = conn.execute(
+                    "SELECT id FROM whatsapp_connections WHERE user_id=? AND phone_number_id=?",
+                    (user["id"], phone_id),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        "UPDATE whatsapp_connections SET access_token_enc=?, status='active', updated_at=? WHERE id=?",
+                        (encrypted, now(), existing["id"]),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO whatsapp_connections (user_id,waba_id,phone_number_id,phone_number,display_name,access_token_enc,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (user["id"], waba_id, phone_id, phone_number, display_name, encrypted, "active", now(), now()),
+                    )
+        json_response(self, {"ok": True, "phones": len(phones)})
+
+    def api_disconnect_whatsapp(self, user):
+        form = parse_form(self.read_body())
+        conn_id = int(form.get("connection_id") or 0)
+        with db() as conn:
+            conn.execute(
+                "UPDATE whatsapp_connections SET status='inactive', updated_at=? WHERE id=? AND user_id=?",
+                (now(), conn_id, user["id"]),
+            )
+        redirect(self, "/connect/whatsapp")
+
+    def page_admin(self, user):
+        if not (user["email"] == ADMIN_EMAIL or user.get("is_admin")):
+            self.send_error(403, "Acceso denegado")
+            return
+        with db() as conn:
+            users = conn.execute(
+                "SELECT users.*, subscriptions.plan, subscriptions.status sub_status, subscriptions.message_limit FROM users LEFT JOIN subscriptions ON subscriptions.user_id=users.id ORDER BY users.created_at DESC"
+            ).fetchall()
+            total_agents = conn.execute("SELECT COUNT(*) c FROM agents").fetchone()["c"]
+            total_convs = conn.execute("SELECT COUNT(*) c FROM conversations").fetchone()["c"]
+            total_leads = conn.execute("SELECT COUNT(*) c FROM leads").fetchone()["c"]
+            total_messages = conn.execute("SELECT COUNT(*) c FROM messages").fetchone()["c"]
+            total_connections = conn.execute("SELECT COUNT(*) c FROM whatsapp_connections WHERE status='active'").fetchone()["c"]
+            month_start = now() - 30 * 86400
+            messages_this_month = conn.execute("SELECT COUNT(*) c FROM messages WHERE created_at > ?", (month_start,)).fetchone()["c"]
+            user_stats = []
+            for u in users:
+                agents_count = conn.execute("SELECT COUNT(*) c FROM agents WHERE user_id=?", (u["id"],)).fetchone()["c"]
+                wa_connected = conn.execute("SELECT COUNT(*) c FROM whatsapp_connections WHERE user_id=? AND status='active'", (u["id"],)).fetchone()["c"]
+                msgs_month = conn.execute(
+                    "SELECT COUNT(*) c FROM messages WHERE created_at > ? AND conversation_id IN (SELECT id FROM conversations WHERE agent_id IN (SELECT id FROM agents WHERE user_id=?))",
+                    (month_start, u["id"]),
+                ).fetchone()["c"]
+                user_stats.append({
+                    "id": u["id"], "name": u["name"], "email": u["email"],
+                    "plan": u["plan"] or "starter", "sub_status": u["sub_status"] or "demo",
+                    "agents": agents_count, "wa_connected": wa_connected,
+                    "msgs_month": msgs_month, "message_limit": u["message_limit"] or 300,
+                    "created_at": u["created_at"],
+                })
+
+        plan_colors = {"starter": "badge-blue", "pro": "badge-green", "agency": "badge-purple"}
+        user_rows = ""
+        for u in user_stats:
+            badge = f'<span class="badge {plan_colors.get(u["plan"], "badge-blue")}">{u["plan"].title()}</span>'
+            wa_badge = f'<span class="badge {"badge-green" if u["wa_connected"] else "badge-gray"}">{"✓ Conectado" if u["wa_connected"] else "Sin WhatsApp"}</span>'
+            usage_pct = min(100, round(u["msgs_month"] / u["message_limit"] * 100)) if u["message_limit"] else 0
+            user_rows += f"""
+            <tr>
+              <td><strong>{esc(u["name"])}</strong><small>{esc(u["email"])}</small></td>
+              <td>{badge}</td>
+              <td>{wa_badge}</td>
+              <td>{u["agents"]}</td>
+              <td>
+                <div class="usage-bar"><div style="width:{usage_pct}%"></div></div>
+                <small>{u["msgs_month"]}/{u["message_limit"]}</small>
+              </td>
+              <td>{time.strftime("%d/%m/%Y", time.localtime(u["created_at"]))}</td>
+              <td>
+                <form method="post" action="/admin/set-plan" style="display:flex;gap:4px;align-items:center">
+                  <input type="hidden" name="target_user_id" value="{u["id"]}">
+                  <select name="plan" class="admin-select">
+                    {"".join(f'<option value="{p}" {"selected" if p == u["plan"] else ""}>{p.title()}</option>' for p in ["starter","pro","agency"])}
+                  </select>
+                  <button class="btn" type="submit">Cambiar</button>
+                </form>
+              </td>
+            </tr>"""
+
+        body = f"""
+        <section class="page-head">
+          <div><p class="eyebrow">Administración del sistema</p><h1>Admin Dashboard</h1><p>Vista global de todos los clientes, conexiones y uso del sistema.</p></div>
+        </section>
+        <section class="stats">
+          <article><strong>{len(users)}</strong><span>Clientes registrados</span></article>
+          <article><strong>{total_connections}</strong><span>WhatsApp conectados</span></article>
+          <article><strong>{total_agents}</strong><span>Vendedores IA creados</span></article>
+          <article><strong>{messages_this_month}</strong><span>Mensajes este mes</span></article>
+          <article><strong>{total_leads}</strong><span>Oportunidades totales</span></article>
+          <article><strong>{total_convs}</strong><span>Conversaciones totales</span></article>
+          <article><strong>{total_messages}</strong><span>Mensajes totales</span></article>
+        </section>
+        <section class="card" style="margin-top:24px">
+          <h2>Clientes</h2>
+          <div style="overflow-x:auto">
+          <table class="admin-table">
+            <thead><tr><th>Cliente</th><th>Plan</th><th>WhatsApp</th><th>Agentes</th><th>Uso mensual</th><th>Registro</th><th>Acciones</th></tr></thead>
+            <tbody>{user_rows}</tbody>
+          </table>
+          </div>
+        </section>
+        """
+        render_page(self, "Admin", body, user, wide=True)
+
+    def admin_set_plan(self, user):
+        if not (user["email"] == ADMIN_EMAIL or user.get("is_admin")):
+            self.send_error(403)
+            return
+        form = parse_form(self.read_body())
+        target_id = int(form.get("target_user_id") or 0)
+        plans = {"starter": (2, 300), "pro": (10, 3000), "agency": (50, 20000)}
+        plan = form.get("plan", "starter")
+        if plan not in plans:
+            plan = "starter"
+        agent_limit, message_limit = plans[plan]
+        with db() as conn:
+            conn.execute(
+                "INSERT INTO subscriptions (user_id,plan,agent_limit,message_limit,status,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET plan=excluded.plan, agent_limit=excluded.agent_limit, message_limit=excluded.message_limit",
+                (target_id, plan, agent_limit, message_limit, "active", now()),
+            )
+        redirect(self, "/admin")
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -1412,6 +1795,18 @@ class App(BaseHTTPRequestHandler):
             user = require_user(self)
             if user:
                 self.update_plan(user)
+        elif path == "/api/connect/whatsapp":
+            user = require_user(self)
+            if user:
+                self.api_connect_whatsapp(user)
+        elif path == "/api/connect/whatsapp/disconnect":
+            user = require_user(self)
+            if user:
+                self.api_disconnect_whatsapp(user)
+        elif path == "/admin/set-plan":
+            user = require_user(self)
+            if user:
+                self.admin_set_plan(user)
         else:
             self.send_error(404)
 
@@ -1902,6 +2297,10 @@ class App(BaseHTTPRequestHandler):
     def webhook_whatsapp_handle(self):
         """Recibe y procesa mensajes de WhatsApp desde Meta."""
         body = self.read_body()
+        sig = self.headers.get("X-Hub-Signature-256", "")
+        if sig and not verify_meta_signature(body, sig):
+            self.send_error(403, "Invalid signature")
+            return
         try:
             data = json.loads(body.decode("utf-8"))
         except json.JSONDecodeError:
@@ -1930,6 +2329,17 @@ class App(BaseHTTPRequestHandler):
                 "SELECT * FROM agents WHERE meta_phone_id=? LIMIT 1",
                 (phone_number_id,),
             ).fetchone()
+            wa_conn = None
+            if not agent_row:
+                wa_conn = conn.execute(
+                    "SELECT * FROM whatsapp_connections WHERE phone_number_id=? AND status='active' LIMIT 1",
+                    (phone_number_id,),
+                ).fetchone()
+                if wa_conn:
+                    agent_row = conn.execute(
+                        "SELECT * FROM agents WHERE user_id=? ORDER BY updated_at DESC LIMIT 1",
+                        (wa_conn["user_id"],),
+                    ).fetchone()
             if not agent_row:
                 return
 
@@ -1967,7 +2377,10 @@ class App(BaseHTTPRequestHandler):
                 contact = extract_contact(msg_text) or sender
                 upsert_lead(conn, agent_id, conv_id, "", contact, intent, msg_text[:300])
 
-        access_token = agent_row["meta_access_token"] or META_ACCESS_TOKEN
+        if wa_conn:
+            access_token = decrypt_token(wa_conn["access_token_enc"]) or META_ACCESS_TOKEN
+        else:
+            access_token = agent_row["meta_access_token"] or META_ACCESS_TOKEN
         send_whatsapp_message(phone_number_id, access_token, sender, reply)
 
     def api_lead(self):
@@ -2470,6 +2883,7 @@ button,.btn,.nav-pill{background:radial-gradient(160px 70px at 50% -22px,rgba(13
 .mini.bot,.msg.bot,.preview-messages p,.assistant-messages .bot{background:#e8fff6!important;color:#0b211b!important;font-weight:750!important;text-shadow:none!important}.mini.user,.msg.user,.preview-messages .preview-user,.assistant-messages .user{background:linear-gradient(145deg,#20ba87,#0d7f5e)!important;color:#ffffff!important;font-weight:800!important;text-shadow:0 1px 0 rgba(0,0,0,.18)!important}.mini-chat .mini-top{color:#71ffd4!important}.mini-chat .mini-top span{background:#35f3bd!important}
 @media(max-width:900px){.auth-grid,.chat-layout,.builder,.login-grid,.dashboard-grid,.conversation-detail,.sales-grid,.widget-editor,.crm-layout,.public-agent,.pricing-grid,.landing-hero,.landing-grid,.channels-band,.contact-band,.channel-cards{grid-template-columns:1fr}.grid,.stats,.form-grid,.agents-grid,.final-grid{grid-template-columns:1fr}.builder-side{position:static}.topbar,.page-head,.control-hero,.filters{flex-direction:column;align-items:flex-start}.hero-panel h1{font-size:32px}.login-grid .hero-panel{min-height:0;padding:24px}.login-grid .hero-panel h1{font-size:32px}.login-grid .signal-grid{grid-template-columns:1fr;gap:8px}.login-grid .mini-chat{display:none}.login-card{position:static;padding:18px}.bio-shell{border-radius:14px;padding:20px}.bio-shell h1{font-size:28px}.landing-hero{min-height:0;padding:18px 0}.landing-copy h1{font-size:42px}.landing-phone{border-radius:18px}.landing-section h2{font-size:28px}}
 @media(max-width:900px){.infra-map{min-height:auto;display:grid;gap:12px;padding:16px}.infra-map:before,.infra-map:after,.infra-node:before{display:none}.infra-core,.infra-node{position:relative;left:auto!important;right:auto!important;top:auto!important;bottom:auto!important;width:100%;transform:none}.infra-core{min-height:130px}.landing-metrics{grid-template-columns:1fr}}
+.connect-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}.connect-card{padding:22px}.connect-header{display:flex;align-items:center;gap:14px;margin-bottom:14px}.connect-icon{font-size:36px}.connect-steps{display:grid;gap:10px;margin:16px 0}.connect-steps div{display:flex;align-items:flex-start;gap:10px}.connect-steps span{min-width:26px;height:26px;border-radius:999px;background:var(--green);color:white;display:grid;place-items:center;font-size:13px;font-weight:900}.connect-steps p{margin:0;color:var(--muted);font-size:14px;padding-top:3px}.wa-conn-card{display:flex;justify-content:space-between;align-items:center;padding:14px;margin-bottom:10px}.wa-conn-info strong,.wa-conn-info span{display:block}.wa-conn-info span{color:var(--muted);font-size:12px;margin-top:2px}.badge{display:inline-flex;border-radius:999px;padding:5px 9px;font-size:12px;font-weight:900;border:1px solid transparent}.badge.active,.badge-green{background:#d9f8ec;color:#0f6e56;border-color:#93dcc5}.badge.inactive,.badge-gray{background:#e8e8e8;color:#666}.badge-blue{background:#e3f0ff;color:#1a5fa8;border-color:#b3d4f5}.badge-purple{background:#f0e8ff;color:#6b21a8;border-color:#d4b3f5}.alert-warning{background:#fff8e1;border:1px solid #f9c74f;border-radius:8px;padding:12px;color:#7d5a00;font-size:14px;line-height:1.5}.alert{border-radius:8px;padding:10px 12px;font-size:14px}.alert-success{background:#d9f8ec;color:#0f6e56;border:1px solid #93dcc5}.alert-error{background:#ffe4e4;color:#8b1a1a;border:1px solid #f5b3b3}.alert-info{background:#e3f0ff;color:#1a5fa8;border:1px solid #b3d4f5}.admin-table{width:100%;border-collapse:collapse}.admin-table th,.admin-table td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}.admin-table th{background:#e2f2ed;font-weight:900;font-size:13px}.admin-table small{display:block;color:var(--muted);font-size:12px;margin-top:2px}.admin-select{width:auto;min-width:100px;margin:0;padding:6px 8px;font-size:13px}.usage-bar{height:6px;background:#e2f2ed;border-radius:999px;overflow:hidden;margin-bottom:3px;width:100px}.usage-bar div{height:100%;background:var(--green);border-radius:999px}.btn.danger{background:linear-gradient(145deg,#e05050,#b53030)!important;border-color:#f09090!important;color:white!important;min-height:34px;padding:6px 10px;font-size:13px}@media(max-width:900px){.connect-grid,.admin-table{display:block;overflow-x:auto}.connect-grid{grid-template-columns:1fr}}
 """
 
 
