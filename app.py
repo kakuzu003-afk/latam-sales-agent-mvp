@@ -999,12 +999,10 @@ class App(BaseHTTPRequestHandler):
             self.page_public_agent(path.split("/")[2])
         elif path == "/":
             self.page_home()
-        elif path == "/privacidad":
-            self.page_legal("Política de privacidad")
-        elif path == "/politica-privacidad":
+        elif path in ("/privacidad", "/politica-privacidad"):
             self.page_privacy_policy()
-        elif path == "/terminos":
-            self.page_legal("Términos de servicio")
+        elif path in ("/terminos", "/terminos-servicio"):
+            self.page_terms_of_service()
         elif path == "/soporte":
             self.page_legal("Soporte")
         elif path == "/login":
@@ -1167,68 +1165,212 @@ class App(BaseHTTPRequestHandler):
         render_page(self, title, body, None, wide=False, public_nav=True)
 
     def page_privacy_policy(self):
-        """Política de privacidad para Meta y usuarios."""
         body = """
         <section class="legal-page">
-          <p class="eyebrow">Privacidad</p>
+          <p class="eyebrow">Legal</p>
           <h1>Política de Privacidad</h1>
-          <p><strong>Última actualización:</strong> 2 de junio de 2026</p>
+          <p><strong>Última actualización:</strong> 2 de junio de 2026 &nbsp;|&nbsp; <strong>Versión:</strong> 1.0</p>
+          <p>BotBuilder LATAM (&ldquo;la Plataforma&rdquo;, &ldquo;nosotros&rdquo;) opera como un servicio de software (SaaS) que permite a negocios latinoamericanos crear y desplegar agentes de ventas con inteligencia artificial en canales de mensajería, incluyendo WhatsApp Business API. Esta Política de Privacidad describe cómo recopilamos, usamos, almacenamos y protegemos la información de nuestros usuarios y de los usuarios finales que interactúan con los agentes desplegados.</p>
 
-          <h2>1. Información que recopilamos</h2>
-          <p>BotBuilder LATAM recopila información que los clientes proporcionan voluntariamente, incluyendo:</p>
+          <h2>1. Responsable del tratamiento de datos</h2>
+          <p><strong>BotBuilder LATAM</strong><br>
+          Plataforma de agentes comerciales con IA para Latinoamérica<br>
+          Sitio web: <strong>https://botbuilder-latam.onrender.com</strong><br>
+          Correo de contacto: <strong>soporte@botbuilder.lat</strong></p>
+
+          <h2>2. Información que recopilamos</h2>
+          <h3>2.1 De los clientes de la plataforma (negocios)</h3>
           <ul>
-            <li>Datos del negocio (nombre, ciudad, horarios, servicios)</li>
-            <li>Números de WhatsApp Business</li>
-            <li>Configuración de vendedores IA (tono, personalidad, conocimiento)</li>
-            <li>Conversaciones entre clientes y los vendedores IA</li>
-            <li>Información de contacto y planes contratados</li>
+            <li>Nombre, correo electrónico y contraseña (almacenada en hash seguro)</li>
+            <li>Información del negocio: nombre, rubro, ciudad, horarios, servicios, precios y políticas comerciales</li>
+            <li>Número de WhatsApp Business y configuración de API (Phone Number ID, tokens de acceso)</li>
+            <li>Configuración del agente IA: tono, personalidad, misión comercial, preguntas frecuentes</li>
+            <li>Plan de suscripción y límites de uso</li>
+          </ul>
+          <h3>2.2 De los usuarios finales (clientes del negocio)</h3>
+          <ul>
+            <li>Contenido de conversaciones con los agentes IA</li>
+            <li>Número de teléfono de WhatsApp (identificador del remitente, proporcionado por Meta)</li>
+            <li>Nombre, correo o teléfono que el usuario comparte voluntariamente en la conversación</li>
+            <li>Intención comercial detectada (cotización, reserva, compra, consulta)</li>
+          </ul>
+          <h3>2.3 Datos técnicos</h3>
+          <ul>
+            <li>Registros de acceso, timestamps de mensajes y metadatos de sesión</li>
+            <li>No recopilamos cookies de seguimiento ni datos de navegación más allá de lo necesario para autenticación</li>
           </ul>
 
-          <h2>2. Cómo usamos la información</h2>
-          <p>Usamos esta información para:</p>
+          <h2>3. Integración con Meta (WhatsApp Business API)</h2>
+          <p>BotBuilder LATAM utiliza la API oficial de WhatsApp Business de Meta Platforms, Inc. para enviar y recibir mensajes en nombre de los negocios clientes. En el marco de esta integración:</p>
           <ul>
-            <li>Proporcionar y mejorar nuestros servicios de vendedores IA</li>
-            <li>Procesar mensajes a través de WhatsApp e Instagram</li>
-            <li>Analizar calidad y oportunidades detectadas</li>
-            <li>Cumplir con obligaciones legales</li>
+            <li>Los mensajes entrantes son recibidos a través de webhooks seguros (HTTPS) desde los servidores de Meta</li>
+            <li>Los mensajes son procesados por nuestros modelos de IA para generar respuestas comerciales</li>
+            <li>Las respuestas son enviadas a través de la API de WhatsApp Business al número del remitente</li>
+            <li>Cumplimos con las <strong>Políticas de uso de la plataforma de Meta</strong> y las <strong>Políticas comerciales de WhatsApp</strong></li>
+            <li>No iniciamos conversaciones no solicitadas; solo respondemos a mensajes iniciados por el usuario final</li>
+            <li>Los tokens de acceso de Meta son almacenados de forma segura y solo se usan para las integraciones autorizadas por cada cliente</li>
           </ul>
 
-          <h2>3. Compartir información</h2>
-          <p>No compartimos información personal con terceros sin consentimiento, excepto:</p>
+          <h2>4. Cómo usamos la información</h2>
           <ul>
-            <li><strong>Meta/Facebook:</strong> Para integración de WhatsApp e Instagram, según lo autorizado</li>
-            <li><strong>Groq:</strong> Para procesamiento de IA (conversaciones anónimas)</li>
-            <li>Cuando lo requiera la ley o autoridad competente</li>
+            <li><strong>Prestación del servicio:</strong> Procesar mensajes y generar respuestas del agente IA</li>
+            <li><strong>Detección de oportunidades:</strong> Identificar intenciones de compra, cotización o agenda para notificar al negocio</li>
+            <li><strong>Mejora continua:</strong> Analizar calidad de respuestas y métricas de conversación (de forma agregada y anonimizada)</li>
+            <li><strong>Seguridad:</strong> Detectar usos abusivos, spam o actividad fraudulenta</li>
+            <li><strong>Cumplimiento legal:</strong> Responder a requerimientos legítimos de autoridades competentes</li>
+          </ul>
+          <p>No usamos los datos para publicidad dirigida ni los vendemos a terceros bajo ninguna circunstancia.</p>
+
+          <h2>5. Compartición de información con terceros</h2>
+          <p>Compartimos datos únicamente con:</p>
+          <ul>
+            <li><strong>Meta Platforms, Inc.:</strong> Para el envío y recepción de mensajes vía WhatsApp Business API, según los términos de uso de Meta</li>
+            <li><strong>Groq, Inc.:</strong> Proveedor de modelos de lenguaje (LLM) para generación de respuestas. Las conversaciones se envían de forma anónima sin datos de identificación personal del negocio cliente</li>
+            <li><strong>Render, Inc.:</strong> Proveedor de infraestructura de nube donde se aloja la plataforma</li>
+          </ul>
+          <p>Todos los proveedores cuentan con sus propias políticas de privacidad y estándares de seguridad. No transferimos datos a ningún otro tercero sin consentimiento explícito.</p>
+
+          <h2>6. Seguridad de los datos</h2>
+          <ul>
+            <li>Comunicaciones cifradas mediante TLS/HTTPS en todas las conexiones</li>
+            <li>Contraseñas almacenadas exclusivamente como hash salado (SHA-256 + salt único por usuario)</li>
+            <li>Tokens de acceso almacenados en base de datos con acceso restringido</li>
+            <li>Tokens de sesión firmados criptográficamente (HMAC-SHA256)</li>
+            <li>Base de datos en modo WAL con acceso solo desde el servidor de aplicación</li>
           </ul>
 
-          <h2>4. Seguridad</h2>
-          <p>Implementamos medidas de seguridad estándar incluyendo encriptación, autenticación y acceso restringido a datos sensibles.</p>
-
-          <h2>5. Derechos del usuario</h2>
-          <p>Los usuarios tienen derecho a:</p>
+          <h2>7. Retención de datos</h2>
           <ul>
-            <li>Acceder a sus datos</li>
-            <li>Solicitar corrección o eliminación</li>
-            <li>Exportar sus datos en formato legible</li>
-            <li>Revocar autorizaciones de terceros</li>
+            <li>Los datos de la cuenta se conservan mientras la cuenta esté activa</li>
+            <li>Al solicitar eliminación de cuenta, los datos se eliminan en un plazo máximo de 30 días</li>
+            <li>Las conversaciones de WhatsApp se conservan para historial del negocio; el usuario final puede solicitar su eliminación contactando al negocio o a nosotros directamente</li>
+            <li>Registros de auditoría se retienen por 90 días por razones de seguridad</li>
           </ul>
-          <p>Para ejercer estos derechos, contacta a: <strong>soporte@botbuilder.lat</strong></p>
 
-          <h2>6. Retención de datos</h2>
-          <p>Los datos se retienen mientras la cuenta esté activa. Al cancelar, los datos se conservan por 30 días y luego se eliminan.</p>
+          <h2>8. Derechos de los usuarios</h2>
+          <p>De acuerdo con las leyes aplicables de protección de datos en Latinoamérica, los usuarios tienen derecho a:</p>
+          <ul>
+            <li><strong>Acceso:</strong> Solicitar una copia de sus datos personales almacenados</li>
+            <li><strong>Rectificación:</strong> Corregir datos inexactos o incompletos</li>
+            <li><strong>Eliminación:</strong> Solicitar la eliminación de sus datos (derecho al olvido)</li>
+            <li><strong>Portabilidad:</strong> Recibir sus datos en formato estructurado y legible</li>
+            <li><strong>Revocación:</strong> Revocar consentimientos otorgados sin efecto retroactivo</li>
+            <li><strong>Oposición:</strong> Oponerse al procesamiento de datos en determinadas circunstancias</li>
+          </ul>
+          <p>Para ejercer cualquiera de estos derechos, escriba a: <strong>soporte@botbuilder.lat</strong></p>
 
-          <h2>7. Cambios a esta política</h2>
-          <p>Nos reservamos el derecho de actualizar esta política. Notificaremos cambios significativos por email.</p>
+          <h2>9. Usuarios menores de edad</h2>
+          <p>La plataforma está destinada exclusivamente a negocios y personas mayores de 18 años. No recopilamos conscientemente datos de menores. Si detectamos que un menor ha proporcionado información, la eliminaremos de inmediato.</p>
 
-          <h2>8. Contacto</h2>
-          <p>Para preguntas sobre esta política de privacidad:</p>
+          <h2>10. Cambios a esta política</h2>
+          <p>Nos reservamos el derecho de actualizar esta política. Cuando se realicen cambios significativos, notificaremos a los usuarios registrados por correo electrónico con al menos 15 días de anticipación. El uso continuado de la plataforma tras la notificación implica aceptación de los cambios.</p>
+
+          <h2>11. Contacto y reclamaciones</h2>
+          <p>Para cualquier consulta, solicitud o reclamación relacionada con esta política:</p>
           <p><strong>Email:</strong> soporte@botbuilder.lat<br>
-          <strong>Dirección:</strong> Latinoamérica</p>
+          <strong>Tiempo de respuesta:</strong> Máximo 5 días hábiles<br>
+          <strong>Plataforma:</strong> https://botbuilder-latam.onrender.com</p>
 
-          <div class="actions"><a class="btn primary" href="/">Volver al inicio</a></div>
+          <div class="actions"><a class="btn primary" href="/">Volver al inicio</a><a class="btn" href="/terminos">Términos de servicio</a></div>
         </section>
         """
         render_page(self, "Política de Privacidad", body, None, wide=False, public_nav=True)
+
+    def page_terms_of_service(self):
+        body = """
+        <section class="legal-page">
+          <p class="eyebrow">Legal</p>
+          <h1>Términos de Servicio</h1>
+          <p><strong>Última actualización:</strong> 2 de junio de 2026 &nbsp;|&nbsp; <strong>Versión:</strong> 1.0</p>
+          <p>Al registrarse y usar BotBuilder LATAM (&ldquo;la Plataforma&rdquo;), usted (&ldquo;el Cliente&rdquo;) acepta estos Términos de Servicio. Léalos detenidamente antes de usar el servicio.</p>
+
+          <h2>1. Descripción del servicio</h2>
+          <p>BotBuilder LATAM es una plataforma SaaS que permite a negocios latinoamericanos crear, configurar y desplegar agentes comerciales con inteligencia artificial capaces de:</p>
+          <ul>
+            <li>Atender consultas de clientes de forma automática vía WhatsApp Business API</li>
+            <li>Responder preguntas frecuentes, cotizaciones, agendas y derivaciones comerciales</li>
+            <li>Detectar y registrar oportunidades de venta (leads)</li>
+            <li>Proporcionar historial de conversaciones y métricas comerciales</li>
+          </ul>
+
+          <h2>2. Elegibilidad y registro</h2>
+          <ul>
+            <li>Debe tener al menos 18 años para usar la plataforma</li>
+            <li>Debe representar un negocio legítimo y proporcionar información verídica</li>
+            <li>Es responsable de mantener la confidencialidad de sus credenciales de acceso</li>
+            <li>Debe notificarnos de inmediato ante cualquier uso no autorizado de su cuenta</li>
+          </ul>
+
+          <h2>3. Uso aceptable</h2>
+          <p>El Cliente se compromete a:</p>
+          <ul>
+            <li>Usar la plataforma únicamente para fines comerciales legítimos</li>
+            <li>Cargar información verídica y actualizada sobre su negocio</li>
+            <li>Cumplir con las <strong>Políticas comerciales de WhatsApp</strong> y las <strong>Políticas de la plataforma de Meta</strong></li>
+            <li>Obtener los consentimientos necesarios de sus clientes para comunicaciones comerciales</li>
+            <li>No usar el servicio para enviar spam, mensajes engañosos, contenido ilegal o materiales que violen derechos de terceros</li>
+            <li>No intentar acceder, modificar o interferir con cuentas de otros usuarios o con la infraestructura de la plataforma</li>
+          </ul>
+
+          <h2>4. Integración con WhatsApp Business API</h2>
+          <ul>
+            <li>El Cliente es responsable de cumplir con los Términos de Servicio de Meta Platforms y WhatsApp Business para el uso de sus números de teléfono</li>
+            <li>BotBuilder LATAM actúa como proveedor de soluciones tecnológicas (BSP - Business Solution Provider) y no garantiza la disponibilidad o aprobación de la API por parte de Meta</li>
+            <li>El Cliente debe obtener sus propias credenciales de API de Meta y es responsable de su seguridad</li>
+            <li>El uso indebido de la API de WhatsApp que resulte en suspensiones por parte de Meta es responsabilidad del Cliente</li>
+          </ul>
+
+          <h2>5. Planes y facturación</h2>
+          <ul>
+            <li><strong>Plan Inicial (Starter):</strong> Hasta 2 agentes y 300 mensajes mensuales</li>
+            <li><strong>Plan Crecimiento (Pro):</strong> Hasta 10 agentes y 3.000 mensajes mensuales</li>
+            <li><strong>Plan Agencia:</strong> Hasta 50 agentes y 20.000 mensajes mensuales</li>
+            <li>Los planes se facturan mensualmente. Los precios están sujetos a cambio con 30 días de aviso</li>
+            <li>No se realizan reembolsos por períodos parciales</li>
+            <li>El exceso de mensajes sobre el límite del plan podrá resultar en la suspensión temporal del servicio hasta el siguiente período</li>
+          </ul>
+
+          <h2>6. Propiedad intelectual</h2>
+          <ul>
+            <li>BotBuilder LATAM y sus componentes son propiedad exclusiva de sus creadores</li>
+            <li>El Cliente conserva la propiedad de la información de su negocio y conversaciones de sus clientes</li>
+            <li>Al usar la plataforma, el Cliente otorga a BotBuilder LATAM una licencia limitada para procesar su información con el fin de prestar el servicio</li>
+            <li>No está permitido copiar, modificar, distribuir o hacer ingeniería inversa de la plataforma</li>
+          </ul>
+
+          <h2>7. Limitación de responsabilidad</h2>
+          <ul>
+            <li>BotBuilder LATAM no garantiza que los agentes IA respondan correctamente en el 100% de los casos; la IA es una herramienta de apoyo, no un sustituto de atención humana</li>
+            <li>No somos responsables por pérdidas de negocio, oportunidades no capturadas o errores en respuestas del agente IA</li>
+            <li>La disponibilidad del servicio depende parcialmente de terceros (Meta, Groq, Render) y no garantizamos disponibilidad ininterrumpida del 100%</li>
+            <li>Nuestra responsabilidad máxima en cualquier caso se limita al monto pagado por el Cliente en los últimos 3 meses</li>
+          </ul>
+
+          <h2>8. Confidencialidad</h2>
+          <p>Ambas partes se comprometen a mantener confidencial la información comercial sensible compartida durante la relación de servicio. Esta obligación persiste por 2 años tras la terminación del servicio.</p>
+
+          <h2>9. Terminación</h2>
+          <ul>
+            <li>El Cliente puede cancelar su cuenta en cualquier momento desde la plataforma o por email</li>
+            <li>BotBuilder LATAM puede suspender o terminar cuentas que violen estos términos, con o sin aviso previo según la gravedad</li>
+            <li>Tras la terminación, los datos se conservan por 30 días y luego se eliminan definitivamente</li>
+          </ul>
+
+          <h2>10. Ley aplicable y resolución de disputas</h2>
+          <p>Estos términos se rigen por las leyes aplicables en Latinoamérica. Cualquier disputa será resuelta preferentemente mediante mediación. De no alcanzarse acuerdo, las partes se someten a los tribunales competentes del domicilio del Cliente.</p>
+
+          <h2>11. Cambios a los términos</h2>
+          <p>Nos reservamos el derecho de modificar estos términos con 30 días de aviso previo. El uso continuado del servicio tras ese período implica aceptación de los nuevos términos.</p>
+
+          <h2>12. Contacto</h2>
+          <p><strong>Email:</strong> soporte@botbuilder.lat<br>
+          <strong>Plataforma:</strong> https://botbuilder-latam.onrender.com<br>
+          <strong>Tiempo de respuesta:</strong> Máximo 5 días hábiles</p>
+
+          <div class="actions"><a class="btn primary" href="/">Volver al inicio</a><a class="btn" href="/privacidad">Política de privacidad</a></div>
+        </section>
+        """
+        render_page(self, "Términos de Servicio", body, None, wide=False, public_nav=True)
 
     def do_OPTIONS(self):
         self.send_response(204)
