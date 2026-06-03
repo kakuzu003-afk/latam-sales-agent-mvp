@@ -350,6 +350,125 @@ def assistant_widget():
     """
 
 
+def render_admin_page(handler, title, body):
+    html_doc = f"""<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{esc(title)} | BotBuilder Admin</title>
+  <style>{CSS}
+  body{{background:#060e0c}}
+  .admin-shell{{display:grid;grid-template-columns:220px 1fr;min-height:100vh;gap:0}}
+  .admin-sidebar{{background:linear-gradient(180deg,#071511 0%,#0a1e19 100%);border-right:1px solid rgba(34,240,183,.18);padding:20px 14px;display:flex;flex-direction:column;gap:6px;position:sticky;top:0;height:100vh;overflow:auto}}
+  .admin-brand{{display:flex;align-items:center;gap:10px;padding:8px 6px 20px;border-bottom:1px solid rgba(34,240,183,.14);margin-bottom:6px}}
+  .admin-brand .mark{{width:36px;height:36px;border-radius:9px;background:linear-gradient(135deg,#1fc28e,#0d7e5c);display:grid;place-items:center;font-weight:900;color:white;font-size:14px;box-shadow:0 0 18px rgba(34,240,183,.4)}}
+  .admin-brand strong{{display:block;color:#f2fffb;font-size:13px}}
+  .admin-brand span{{display:block;color:#5ab89c;font-size:11px;font-weight:700}}
+  .admin-nav-section{{color:#4a7a6d;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;padding:10px 8px 4px;margin-top:6px}}
+  .admin-nav-item{{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:8px;color:#a8d8ca;font-size:13px;font-weight:800;text-decoration:none;transition:.15s ease;border:1px solid transparent}}
+  .admin-nav-item:hover,.admin-nav-item.active{{background:rgba(34,240,183,.1);border-color:rgba(34,240,183,.22);color:#f2fffb}}
+  .admin-nav-item .icon{{width:18px;text-align:center;font-size:14px}}
+  .admin-main{{background:#0a1612;overflow:auto}}
+  .admin-topbar{{background:rgba(6,14,12,.9);border-bottom:1px solid rgba(34,240,183,.14);padding:14px 24px;display:flex;align-items:center;justify-content:space-between;backdrop-filter:blur(10px);position:sticky;top:0;z-index:10}}
+  .admin-topbar h1{{margin:0;font-size:22px;color:#f2fffb;font-weight:900}}
+  .admin-topbar span{{color:#5ab89c;font-size:13px}}
+  .admin-content{{padding:22px 24px}}
+  .admin-kpi-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}}
+  .kpi-card{{background:linear-gradient(145deg,rgba(14,42,35,.92),rgba(8,22,18,.96));border:1px solid rgba(34,240,183,.22);border-radius:12px;padding:18px;position:relative;overflow:hidden}}
+  .kpi-card:before{{content:"";position:absolute;inset:0;background:radial-gradient(180px 80px at 50% -20px,rgba(34,240,183,.18),transparent 65%);pointer-events:none}}
+  .kpi-card>*{{position:relative}}
+  .kpi-label{{color:#5ab89c;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}}
+  .kpi-value{{font-size:34px;font-weight:950;color:#f2fffb;line-height:1}}
+  .kpi-sub{{color:#4a7a6d;font-size:12px;margin-top:4px}}
+  .kpi-card.highlight{{border-color:rgba(34,240,183,.55);box-shadow:0 0 28px rgba(34,240,183,.2)}}
+  .kpi-card.highlight .kpi-value{{color:#65ffd0}}
+  .admin-section{{margin-bottom:24px}}
+  .admin-section-header{{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}}
+  .admin-section-title{{color:#f2fffb;font-size:16px;font-weight:900;margin:0}}
+  .admin-card{{background:linear-gradient(145deg,rgba(14,42,35,.88),rgba(8,22,18,.94));border:1px solid rgba(34,240,183,.18);border-radius:12px;overflow:hidden}}
+  .admin-table{{width:100%;border-collapse:collapse}}
+  .admin-table th{{background:rgba(34,240,183,.08);color:#65ffd0;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;padding:10px 14px;text-align:left;border-bottom:1px solid rgba(34,240,183,.14)}}
+  .admin-table td{{padding:12px 14px;border-bottom:1px solid rgba(34,240,183,.07);color:#c8e8de;vertical-align:middle}}
+  .admin-table tr:last-child td{{border-bottom:0}}
+  .admin-table tr:hover td{{background:rgba(34,240,183,.04)}}
+  .admin-table small{{display:block;color:#4a7a6d;font-size:11px;margin-top:2px}}
+  .admin-table strong{{color:#f2fffb}}
+  .plan-badge{{display:inline-flex;border-radius:999px;padding:4px 9px;font-size:11px;font-weight:900;border:1px solid transparent}}
+  .plan-starter{{background:rgba(53,167,255,.15);color:#7ec8ff;border-color:rgba(53,167,255,.3)}}
+  .plan-pro{{background:rgba(34,240,183,.15);color:#65ffd0;border-color:rgba(34,240,183,.3)}}
+  .plan-agency{{background:rgba(170,130,255,.15);color:#c4a3ff;border-color:rgba(170,130,255,.3)}}
+  .status-dot{{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:800}}
+  .status-dot:before{{content:"";width:7px;height:7px;border-radius:999px;display:inline-block}}
+  .status-active:before{{background:#65ffd0;box-shadow:0 0 8px rgba(34,240,183,.8)}}
+  .status-demo:before{{background:#f9c74f;box-shadow:0 0 8px rgba(249,199,79,.6)}}
+  .status-inactive:before{{background:#666}}
+  .wa-status-on{{color:#65ffd0}}.wa-status-off{{color:#4a7a6d}}
+  .usage-bar-dark{{height:5px;background:rgba(34,240,183,.12);border-radius:999px;overflow:hidden;min-width:80px}}
+  .usage-bar-dark div{{height:100%;border-radius:999px;background:linear-gradient(90deg,#1fc28e,#65ffd0)}}
+  .usage-bar-dark.warn div{{background:linear-gradient(90deg,#f9c74f,#f4a261)}}
+  .usage-bar-dark.danger div{{background:linear-gradient(90deg,#e05050,#ff8a8a)}}
+  .admin-select{{background:rgba(8,22,18,.9);border:1px solid rgba(34,240,183,.28);color:#c8e8de;border-radius:6px;padding:5px 8px;font-size:12px;font-weight:800}}
+  .admin-btn{{background:rgba(34,240,183,.1);border:1px solid rgba(34,240,183,.28);color:#65ffd0;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:900;cursor:pointer;min-height:28px;transition:.15s ease}}
+  .admin-btn:hover{{background:rgba(34,240,183,.2);border-color:rgba(34,240,183,.6)}}
+  .admin-btn.danger{{background:rgba(224,80,80,.1);border-color:rgba(224,80,80,.3);color:#ff9898}}
+  .mini-chart{{display:flex;align-items:flex-end;gap:3px;height:40px}}
+  .mini-chart div{{flex:1;background:rgba(34,240,183,.35);border-radius:3px 3px 0 0;min-width:8px;transition:.2s ease}}
+  .activity-feed{{display:grid;gap:8px;max-height:320px;overflow:auto;padding:14px}}
+  .activity-item{{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:rgba(34,240,183,.05);border:1px solid rgba(34,240,183,.1);border-radius:8px}}
+  .activity-dot{{width:8px;height:8px;border-radius:999px;margin-top:5px;flex-shrink:0}}
+  .activity-item p,.activity-item small{{margin:0}}
+  .activity-item p{{color:#c8e8de;font-size:13px}}
+  .activity-item small{{color:#4a7a6d;font-size:11px;margin-top:2px;display:block}}
+  .plan-dist{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}
+  .plan-dist-card{{background:rgba(34,240,183,.05);border:1px solid rgba(34,240,183,.12);border-radius:10px;padding:14px;text-align:center}}
+  .plan-dist-card strong{{display:block;font-size:28px;color:#f2fffb}}
+  .plan-dist-card span{{color:#4a7a6d;font-size:12px;font-weight:800}}
+  .admin-two-col{{display:grid;grid-template-columns:1fr 1fr;gap:16px}}
+  .admin-three-col{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}}
+  @media(max-width:900px){{.admin-shell{{grid-template-columns:1fr}}.admin-sidebar{{height:auto;position:static}}.admin-kpi-grid,.admin-two-col,.admin-three-col,.plan-dist{{grid-template-columns:1fr 1fr}}}}
+  </style>
+</head>
+<body>
+<div class="admin-shell">
+  <aside class="admin-sidebar">
+    <div class="admin-brand">
+      <div class="mark">IA</div>
+      <div><strong>BotBuilder LATAM</strong><span>Panel de administrador</span></div>
+    </div>
+    <span class="admin-nav-section">Sistema</span>
+    <a class="admin-nav-item {'active' if '/admin' in handler.path else ''}" href="/admin"><span class="icon">📊</span>Overview</a>
+    <span class="admin-nav-section">Clientes</span>
+    <a class="admin-nav-item" href="/admin#clientes"><span class="icon">👥</span>Clientes</a>
+    <a class="admin-nav-item" href="/admin#conexiones"><span class="icon">📱</span>WhatsApp</a>
+    <span class="admin-nav-section">Plataforma</span>
+    <a class="admin-nav-item" href="/dashboard"><span class="icon">🏠</span>Mi cuenta</a>
+    <a class="admin-nav-item" href="/logout"><span class="icon">🚪</span>Salir</a>
+  </aside>
+  <div class="admin-main">
+    <div class="admin-topbar">
+      <div>
+        <h1>{esc(title)}</h1>
+        <span>{time.strftime('%d %b %Y, %H:%M')}</span>
+      </div>
+      <a class="admin-btn" href="/dashboard">← Volver a mi cuenta</a>
+    </div>
+    <div class="admin-content">
+      {body}
+    </div>
+  </div>
+</div>
+<script>{JS}</script>
+</body>
+</html>"""
+    payload = html_doc.encode("utf-8")
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Length", str(len(payload)))
+    handler.end_headers()
+    handler.wfile.write(payload)
+
+
 def render_page(handler, title, body, user=None, wide=False, public_nav=False):
     user_nav = ""
     if user:
@@ -1657,85 +1776,191 @@ class App(BaseHTTPRequestHandler):
         if not (user["email"] == ADMIN_EMAIL or user.get("is_admin")):
             self.send_error(403, "Acceso denegado")
             return
+        month_start = now() - 30 * 86400
+        week_start = now() - 7 * 86400
         with db() as conn:
             users = conn.execute(
-                "SELECT users.*, subscriptions.plan, subscriptions.status sub_status, subscriptions.message_limit FROM users LEFT JOIN subscriptions ON subscriptions.user_id=users.id ORDER BY users.created_at DESC"
+                "SELECT users.*, subscriptions.plan, subscriptions.status sub_status, subscriptions.message_limit, subscriptions.agent_limit FROM users LEFT JOIN subscriptions ON subscriptions.user_id=users.id ORDER BY users.created_at DESC"
             ).fetchall()
             total_agents = conn.execute("SELECT COUNT(*) c FROM agents").fetchone()["c"]
             total_convs = conn.execute("SELECT COUNT(*) c FROM conversations").fetchone()["c"]
             total_leads = conn.execute("SELECT COUNT(*) c FROM leads").fetchone()["c"]
             total_messages = conn.execute("SELECT COUNT(*) c FROM messages").fetchone()["c"]
             total_connections = conn.execute("SELECT COUNT(*) c FROM whatsapp_connections WHERE status='active'").fetchone()["c"]
-            month_start = now() - 30 * 86400
             messages_this_month = conn.execute("SELECT COUNT(*) c FROM messages WHERE created_at > ?", (month_start,)).fetchone()["c"]
+            new_users_week = conn.execute("SELECT COUNT(*) c FROM users WHERE created_at > ?", (week_start,)).fetchone()["c"]
+            new_convs_week = conn.execute("SELECT COUNT(*) c FROM conversations WHERE created_at > ?", (week_start,)).fetchone()["c"]
+            wa_connections_all = conn.execute("SELECT * FROM whatsapp_connections ORDER BY created_at DESC").fetchall()
+            plan_counts = {"starter": 0, "pro": 0, "agency": 0}
+            mrr_rates = {"starter": 29, "pro": 79, "agency": 199}
             user_stats = []
             for u in users:
+                plan = u["plan"] or "starter"
+                plan_counts[plan] = plan_counts.get(plan, 0) + 1
                 agents_count = conn.execute("SELECT COUNT(*) c FROM agents WHERE user_id=?", (u["id"],)).fetchone()["c"]
                 wa_connected = conn.execute("SELECT COUNT(*) c FROM whatsapp_connections WHERE user_id=? AND status='active'", (u["id"],)).fetchone()["c"]
                 msgs_month = conn.execute(
                     "SELECT COUNT(*) c FROM messages WHERE created_at > ? AND conversation_id IN (SELECT id FROM conversations WHERE agent_id IN (SELECT id FROM agents WHERE user_id=?))",
                     (month_start, u["id"]),
                 ).fetchone()["c"]
+                leads_count = conn.execute(
+                    "SELECT COUNT(*) c FROM leads WHERE agent_id IN (SELECT id FROM agents WHERE user_id=?)",
+                    (u["id"],),
+                ).fetchone()["c"]
                 user_stats.append({
                     "id": u["id"], "name": u["name"], "email": u["email"],
-                    "plan": u["plan"] or "starter", "sub_status": u["sub_status"] or "demo",
+                    "plan": plan, "sub_status": u["sub_status"] or "demo",
                     "agents": agents_count, "wa_connected": wa_connected,
                     "msgs_month": msgs_month, "message_limit": u["message_limit"] or 300,
-                    "created_at": u["created_at"],
+                    "agent_limit": u["agent_limit"] or 2,
+                    "leads": leads_count, "created_at": u["created_at"],
                 })
 
-        plan_colors = {"starter": "badge-blue", "pro": "badge-green", "agency": "badge-purple"}
+        mrr_potential = sum(mrr_rates.get(p, 0) * c for p, c in plan_counts.items())
+        total_users = len(users)
+        active_users = sum(1 for u in user_stats if u["msgs_month"] > 0)
+        conversion_rate = round(active_users / total_users * 100) if total_users else 0
+
+        plan_dist_html = "".join([
+            f'<div class="plan-dist-card"><strong>{plan_counts.get(p, 0)}</strong><span>{p.title()}</span></div>'
+            for p in ["starter", "pro", "agency"]
+        ])
+
         user_rows = ""
         for u in user_stats:
-            badge = f'<span class="badge {plan_colors.get(u["plan"], "badge-blue")}">{u["plan"].title()}</span>'
-            wa_badge = f'<span class="badge {"badge-green" if u["wa_connected"] else "badge-gray"}">{"✓ Conectado" if u["wa_connected"] else "Sin WhatsApp"}</span>'
+            plan_cls = f"plan-{u['plan']}"
+            status_cls = f"status-{u['sub_status']}"
             usage_pct = min(100, round(u["msgs_month"] / u["message_limit"] * 100)) if u["message_limit"] else 0
+            bar_cls = "danger" if usage_pct >= 90 else ("warn" if usage_pct >= 70 else "")
+            wa_html = f'<span class="wa-status-on">✓ {u["wa_connected"]}</span>' if u["wa_connected"] else '<span class="wa-status-off">—</span>'
             user_rows += f"""
             <tr>
-              <td><strong>{esc(u["name"])}</strong><small>{esc(u["email"])}</small></td>
-              <td>{badge}</td>
-              <td>{wa_badge}</td>
-              <td>{u["agents"]}</td>
               <td>
-                <div class="usage-bar"><div style="width:{usage_pct}%"></div></div>
-                <small>{u["msgs_month"]}/{u["message_limit"]}</small>
+                <strong>{esc(u["name"])}</strong>
+                <small>{esc(u["email"])}</small>
+                <small>ID #{u["id"]} · Registro {time.strftime("%d/%m/%Y", time.localtime(u["created_at"]))}</small>
               </td>
-              <td>{time.strftime("%d/%m/%Y", time.localtime(u["created_at"]))}</td>
+              <td><span class="plan-badge {plan_cls}">{u["plan"].title()}</span></td>
+              <td><span class="status-dot {status_cls}">{u["sub_status"].title()}</span></td>
+              <td>{wa_html}</td>
+              <td>{u["agents"]}/{u["agent_limit"]}</td>
               <td>
-                <form method="post" action="/admin/set-plan" style="display:flex;gap:4px;align-items:center">
+                <div class="usage-bar-dark {bar_cls}"><div style="width:{usage_pct}%"></div></div>
+                <small style="color:#4a7a6d">{u["msgs_month"]:,}/{u["message_limit"]:,} msgs</small>
+              </td>
+              <td>{u["leads"]}</td>
+              <td>
+                <form method="post" action="/admin/set-plan" style="display:flex;gap:5px;align-items:center">
                   <input type="hidden" name="target_user_id" value="{u["id"]}">
                   <select name="plan" class="admin-select">
                     {"".join(f'<option value="{p}" {"selected" if p == u["plan"] else ""}>{p.title()}</option>' for p in ["starter","pro","agency"])}
                   </select>
-                  <button class="btn" type="submit">Cambiar</button>
+                  <button class="admin-btn" type="submit">Aplicar</button>
                 </form>
               </td>
             </tr>"""
 
+        wa_rows = ""
+        for c in wa_connections_all[:20]:
+            owner = next((u for u in user_stats if u["id"] == c["user_id"]), None)
+            owner_name = owner["name"] if owner else f"User #{c['user_id']}"
+            status_cls = "wa-status-on" if c["status"] == "active" else "wa-status-off"
+            wa_rows += f"""
+            <tr>
+              <td><strong>{esc(c["phone_number"] or "—")}</strong><small>{esc(c["display_name"] or "—")}</small></td>
+              <td><small style="color:#4a7a6d">{esc(c["phone_number_id"])}</small></td>
+              <td><span class="{status_cls}">{'● Activo' if c["status"] == "active" else '○ Inactivo'}</span></td>
+              <td>{esc(owner_name)}</td>
+              <td>{time.strftime("%d/%m/%Y", time.localtime(c["created_at"]))}</td>
+            </tr>"""
+        if not wa_rows:
+            wa_rows = '<tr><td colspan="5" style="color:#4a7a6d;text-align:center;padding:20px">No hay conexiones de WhatsApp aún</td></tr>'
+
         body = f"""
-        <section class="page-head">
-          <div><p class="eyebrow">Administración del sistema</p><h1>Admin Dashboard</h1><p>Vista global de todos los clientes, conexiones y uso del sistema.</p></div>
-        </section>
-        <section class="stats">
-          <article><strong>{len(users)}</strong><span>Clientes registrados</span></article>
-          <article><strong>{total_connections}</strong><span>WhatsApp conectados</span></article>
-          <article><strong>{total_agents}</strong><span>Vendedores IA creados</span></article>
-          <article><strong>{messages_this_month}</strong><span>Mensajes este mes</span></article>
-          <article><strong>{total_leads}</strong><span>Oportunidades totales</span></article>
-          <article><strong>{total_convs}</strong><span>Conversaciones totales</span></article>
-          <article><strong>{total_messages}</strong><span>Mensajes totales</span></article>
-        </section>
-        <section class="card" style="margin-top:24px">
-          <h2>Clientes</h2>
-          <div style="overflow-x:auto">
-          <table class="admin-table">
-            <thead><tr><th>Cliente</th><th>Plan</th><th>WhatsApp</th><th>Agentes</th><th>Uso mensual</th><th>Registro</th><th>Acciones</th></tr></thead>
-            <tbody>{user_rows}</tbody>
-          </table>
+        <div class="admin-kpi-grid">
+          <div class="kpi-card highlight">
+            <div class="kpi-label">MRR Potencial</div>
+            <div class="kpi-value">${mrr_potential:,}</div>
+            <div class="kpi-sub">USD / mes si todos pagan</div>
           </div>
-        </section>
+          <div class="kpi-card">
+            <div class="kpi-label">Clientes totales</div>
+            <div class="kpi-value">{total_users}</div>
+            <div class="kpi-sub">+{new_users_week} esta semana</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Usuarios activos</div>
+            <div class="kpi-value">{active_users}</div>
+            <div class="kpi-sub">{conversion_rate}% activación</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">WhatsApp conectados</div>
+            <div class="kpi-value">{total_connections}</div>
+            <div class="kpi-sub">de {total_users} clientes</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Mensajes este mes</div>
+            <div class="kpi-value">{messages_this_month:,}</div>
+            <div class="kpi-sub">{total_messages:,} histórico</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Vendedores IA</div>
+            <div class="kpi-value">{total_agents}</div>
+            <div class="kpi-sub">en {total_users} cuentas</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Conversaciones</div>
+            <div class="kpi-value">{total_convs:,}</div>
+            <div class="kpi-sub">+{new_convs_week} esta semana</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Oportunidades</div>
+            <div class="kpi-value">{total_leads:,}</div>
+            <div class="kpi-sub">leads detectados</div>
+          </div>
+        </div>
+
+        <div class="admin-section">
+          <div class="admin-section-header">
+            <h2 class="admin-section-title">Distribución de planes</h2>
+          </div>
+          <div class="admin-card" style="padding:16px">
+            <div class="plan-dist">{plan_dist_html}</div>
+          </div>
+        </div>
+
+        <div class="admin-section" id="clientes">
+          <div class="admin-section-header">
+            <h2 class="admin-section-title">Clientes ({total_users})</h2>
+          </div>
+          <div class="admin-card">
+            <div style="overflow-x:auto">
+            <table class="admin-table">
+              <thead>
+                <tr>
+                  <th>Cliente</th><th>Plan</th><th>Estado</th><th>WhatsApp</th>
+                  <th>Agentes</th><th>Uso mensual</th><th>Leads</th><th>Cambiar plan</th>
+                </tr>
+              </thead>
+              <tbody>{user_rows}</tbody>
+            </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="admin-section" id="conexiones">
+          <div class="admin-section-header">
+            <h2 class="admin-section-title">Conexiones WhatsApp</h2>
+          </div>
+          <div class="admin-card">
+            <table class="admin-table">
+              <thead><tr><th>Número</th><th>Phone Number ID</th><th>Estado</th><th>Cliente</th><th>Conectado</th></tr></thead>
+              <tbody>{wa_rows}</tbody>
+            </table>
+          </div>
+        </div>
         """
-        render_page(self, "Admin", body, user, wide=True)
+        render_admin_page(self, "Admin Dashboard", body)
 
     def admin_set_plan(self, user):
         if not (user["email"] == ADMIN_EMAIL or user.get("is_admin")):
