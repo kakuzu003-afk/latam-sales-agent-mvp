@@ -9,3 +9,11 @@ services:
         generateValue: true
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
+      # Carpeta persistente: los datos viven en el disco y NO se borran al hacer deploy.
+      - key: DATA_DIR
+        value: /var/data
+    # Disco persistente montado en /var/data (sobrevive deploys y reinicios).
+    disk:
+      name: botbuilder-data
+      mountPath: /var/data
+      sizeGB: 1

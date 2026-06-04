@@ -1,10 +1,12 @@
-﻿import hashlib
+﻿import glob
+import hashlib
 import hmac
 import html
 import json
 import os
 import secrets
 import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -14,8 +16,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 APP_NAME = "BotBuilder LATAM"
-DB_PATH = os.path.join(os.path.dirname(__file__), "botbuilder.sqlite3")
-SECRETS_PATH = os.path.join(os.path.dirname(__file__), "secrets.json")
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+# DATA_DIR: carpeta PERSISTENTE para los datos. En producción debe apuntar al disco
+# de Render (p.ej. /var/data) para que NUNCA se pierdan al hacer deploy/reiniciar.
+# En desarrollo local usa la carpeta del proyecto.
+DATA_DIR = os.environ.get("DATA_DIR") or APP_DIR
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except OSError:
+    DATA_DIR = APP_DIR
+BACKUP_DIR = os.path.join(DATA_DIR, "backups")
+try:
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+except OSError:
+    pass
+DB_PATH = os.path.join(DATA_DIR, "botbuilder.sqlite3")
+SECRETS_PATH = os.path.join(DATA_DIR, "secrets.json")
+ICON_PATH = os.path.join(APP_DIR, "botbuilder-neon.ico")
 
 
 def _load_or_create_secret():
@@ -61,6 +78,22 @@ META_APP_ID = os.environ.get("META_APP_ID") or LOCAL_SECRETS.get("META_APP_ID", 
 META_APP_SECRET = os.environ.get("META_APP_SECRET") or LOCAL_SECRETS.get("META_APP_SECRET", "")
 META_API_VERSION = "v20.0"
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL") or LOCAL_SECRETS.get("ADMIN_EMAIL", "")
+
+# Fuente única de verdad para los planes (usada en landing, billing, admin y límites).
+PLANS = {
+    "starter": {"name": "Inicial", "price": 19, "agent_limit": 2, "message_limit": 300,
+                "tagline": "Para validar tu primer negocio y empezar a captar oportunidades."},
+    "pro": {"name": "Crecimiento", "price": 49, "agent_limit": 10, "message_limit": 3000,
+            "tagline": "Para negocios que ya reciben consultas y quieren vender más."},
+    "agency": {"name": "Agencia", "price": 149, "agent_limit": 50, "message_limit": 20000,
+               "tagline": "Para manejar varios negocios o clientes desde una sola cuenta."},
+}
+PLAN_ORDER = ["starter", "pro", "agency"]
+
+
+def plan_limits(plan):
+    p = PLANS.get(plan, PLANS["starter"])
+    return p["agent_limit"], p["message_limit"]
 
 
 def db():
@@ -199,17 +232,82 @@ def init_db():
             "ALTER TABLE agents ADD COLUMN widget_label TEXT DEFAULT ''",
             "ALTER TABLE agents ADD COLUMN public_slug TEXT DEFAULT ''",
             "ALTER TABLE leads ADD COLUMN notes TEXT DEFAULT ''",
-            "ALTER TABLE agents ADD COLUMN meta_phone_id TEXT DEFAULT ''",
-            "ALTER TABLE agents ADD COLUMN meta_access_token TEXT DEFAULT ''",
             "ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0",
         ]:
             try:
                 conn.execute(sql)
             except sqlite3.OperationalError:
                 pass
+        # Migración: eliminar columnas meta manuales (la conexión ahora es 100% OAuth de Meta).
+        agents_cols = {r["name"] for r in conn.execute("PRAGMA table_info(agents)")}
+        for col in ("meta_phone_id", "meta_access_token"):
+            if col in agents_cols:
+                try:
+                    conn.execute(f"ALTER TABLE agents DROP COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
         for agent in conn.execute("SELECT id,business_name FROM agents WHERE public_slug IS NULL OR public_slug=''").fetchall():
             conn.execute("UPDATE agents SET public_slug=? WHERE id=?", (unique_slug(conn, agent["business_name"], agent["id"]), agent["id"]))
         conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_slug ON agents(public_slug)")
+
+
+def backup_database(dest_path):
+    """Copia CONSISTENTE de la base usando la API de backup de SQLite (segura con WAL activo)."""
+    if not os.path.exists(DB_PATH):
+        return False
+    src = dst = None
+    try:
+        src = sqlite3.connect(DB_PATH, timeout=30)
+        dst = sqlite3.connect(dest_path)
+        with dst:
+            src.backup(dst)
+        return True
+    except sqlite3.Error:
+        try:
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+        except OSError:
+            pass
+        return False
+    finally:
+        if dst:
+            dst.close()
+        if src:
+            src.close()
+
+
+def run_backup_snapshot(keep=14):
+    """Crea un respaldo con timestamp y conserva solo los `keep` más recientes."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dest = os.path.join(BACKUP_DIR, f"botbuilder-{stamp}.sqlite3")
+    if not backup_database(dest):
+        return None
+    files = sorted(glob.glob(os.path.join(BACKUP_DIR, "botbuilder-*.sqlite3")))
+    for old in files[:-keep]:
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+    return dest
+
+
+def _backup_loop(interval_hours=6):
+    while True:
+        time.sleep(interval_hours * 3600)
+        try:
+            run_backup_snapshot()
+        except Exception:
+            pass
+
+
+def start_backup_thread():
+    """Lanza respaldos automáticos en segundo plano (no bloquea el servidor)."""
+    try:
+        run_backup_snapshot()  # respaldo inmediato al arrancar
+    except Exception:
+        pass
+    t = threading.Thread(target=_backup_loop, daemon=True)
+    t.start()
 
 
 def now():
@@ -220,19 +318,44 @@ def esc(value):
     return html.escape("" if value is None else str(value), quote=True)
 
 
+PBKDF2_ITERATIONS = 240000
+
+
 def hash_password(password):
     salt = secrets.token_hex(16)
-    digest = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
-    return f"{salt}${digest}"
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), PBKDF2_ITERATIONS).hex()
+    return f"pbkdf2${PBKDF2_ITERATIONS}${salt}${digest}"
 
 
 def verify_password(password, stored):
+    if not stored:
+        return False
+    # Formato nuevo: pbkdf2$iteraciones$salt$digest
+    if stored.startswith("pbkdf2$"):
+        try:
+            _, iters, salt, digest = stored.split("$", 3)
+            check = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), int(iters)).hex()
+        except (ValueError, TypeError):
+            return False
+        return hmac.compare_digest(check, digest)
+    # Formato heredado: salt$digest (SHA256 simple) — se acepta para migrar al iniciar sesión.
     try:
         salt, digest = stored.split("$", 1)
     except ValueError:
         return False
     check = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
     return hmac.compare_digest(check, digest)
+
+
+def needs_rehash(stored):
+    """True si el hash usa un formato/parámetros antiguos y conviene regenerarlo."""
+    if not stored or not stored.startswith("pbkdf2$"):
+        return True
+    try:
+        iters = int(stored.split("$", 3)[1])
+    except (ValueError, IndexError):
+        return True
+    return iters < PBKDF2_ITERATIONS
 
 
 def sign(value):
@@ -246,6 +369,36 @@ def unsign(value):
     raw, sig = value.rsplit(".", 1)
     expected = hmac.new(SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()
     return raw if hmac.compare_digest(sig, expected) else ""
+
+
+_RATE_BUCKETS = {}
+_RATE_LOCK = threading.Lock()
+
+
+def rate_limited(key, limit, window):
+    """Limitador de tasa simple en memoria. Devuelve True si se superó `limit` solicitudes en `window` segundos."""
+    nowt = time.time()
+    cutoff = nowt - window
+    with _RATE_LOCK:
+        hits = [t for t in _RATE_BUCKETS.get(key, ()) if t > cutoff]
+        hits.append(nowt)
+        _RATE_BUCKETS[key] = hits
+        # Limpieza oportunista para evitar crecimiento sin límite.
+        if len(_RATE_BUCKETS) > 5000:
+            for k in [k for k, v in _RATE_BUCKETS.items() if not v or v[-1] < cutoff]:
+                _RATE_BUCKETS.pop(k, None)
+        return len(hits) > limit
+
+
+def client_ip(handler):
+    """IP real del cliente, respetando X-Forwarded-For cuando hay proxy/hosting delante."""
+    fwd = handler.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    try:
+        return handler.client_address[0]
+    except (AttributeError, IndexError):
+        return "unknown"
 
 
 def parse_form(body):
@@ -308,12 +461,17 @@ def redirect(handler, path):
     handler.end_headers()
 
 
+COOKIE_SECURE = os.environ.get("APP_URL", "").startswith("https://")
+
+
 def cookie_header(name, value, max_age=None):
     c = cookies.SimpleCookie()
     c[name] = value
     c[name]["path"] = "/"
     c[name]["httponly"] = True
     c[name]["samesite"] = "Lax"
+    if COOKIE_SECURE:
+        c[name]["secure"] = True
     if max_age is not None:
         c[name]["max-age"] = str(max_age)
     return c.output(header="").strip()
@@ -455,8 +613,26 @@ a{text-decoration:none;color:inherit}
 .sys-icon.warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.2)}
 .sys-text strong{display:block;color:#ffffff;font-size:13px;font-weight:800}
 .sys-text span{display:block;color:#3d6b5c;font-size:11px;margin-top:2px}
+/* BACKUPS */
+.backup-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.backup-stat{display:flex;align-items:center;gap:12px;background:#090f0d;border:1px solid #1a2e28;border-radius:12px;padding:14px}
+.backup-stat .bk-ic{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;font-size:18px;flex-shrink:0}
+.backup-stat .bk-ic.ok{background:rgba(0,232,150,.1);border:1px solid rgba(0,232,150,.2)}
+.backup-stat .bk-ic.warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.2)}
+.backup-stat strong{display:block;color:#fff;font-size:14px;font-weight:800}
+.backup-stat small{display:block;color:#3d6b5c;font-size:11px;margin-top:2px;word-break:break-all}
+@media(max-width:768px){.backup-grid{grid-template-columns:1fr}}
+/* CHARTS / SPARKLINES */
+.chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px}
+.chart-card{background:#0d1512;border:1px solid #1a2e28;border-radius:14px;padding:16px 18px}
+.chart-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px}
+.chart-head h3{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:#3d6b5c}
+.chart-head strong{font-size:22px;font-weight:900;color:#fff;letter-spacing:-.02em}
+.spark-wrap svg{width:100%;height:60px;display:block;overflow:visible}
+.spark-line{fill:none;stroke:url(#sg);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+.spark-area{fill:url(#sa);opacity:.85}
 @media(max-width:1024px){.ash{grid-template-columns:200px 1fr}.kg{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:768px){.ash{grid-template-columns:1fr}.asb{height:auto;position:static}.kg,.pd,.sys-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:768px){.ash{grid-template-columns:1fr}.asb{height:auto;position:static}.kg,.pd,.sys-grid,.chart-grid{grid-template-columns:1fr 1fr}}
 """
 
 def render_admin_page(handler, title, body):
@@ -465,8 +641,14 @@ def render_admin_page(handler, title, body):
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#050d0b">
+  <meta name="robots" content="noindex">
   <title>{esc(title)} | Admin</title>
-  <style>{ADMIN_CSS}</style>
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap">
+  <link rel="stylesheet" href="/static/admin.css?v={ASSET_VERSION}">
 </head>
 <body>
 <div class="ash">
@@ -530,7 +712,7 @@ def render_page(handler, title, body, user=None, wide=False, public_nav=False):
         def nav_item(href, label):
             active = current_path == href or (href != "/dashboard" and current_path.startswith(href))
             return f'<a class="nav-pill {"active" if active else ""}" href="{href}">{label}</a>'
-        admin_link = f'{nav_item("/admin", "⚙ Admin")}' if (user["email"] == ADMIN_EMAIL or user.get("is_admin")) else ""
+        admin_link = f'{nav_item("/admin", "⚙ Admin")}' if is_admin(user) else ""
         user_nav = f"""
         {nav_item("/dashboard", "Control")}
         {nav_item("/agents/new", "Nuevo vendedor")}
@@ -551,13 +733,29 @@ def render_page(handler, title, body, user=None, wide=False, public_nav=False):
         <a class="nav-pill active" href="/login">Entrar</a>
         """
     brand_href = "/dashboard" if user else "/"
+    base = get_base_url(handler)
+    desc = "Crea vendedores IA que atienden tu WhatsApp, califican clientes y convierten consultas en oportunidades. Hecho para negocios de Latinoamérica."
     html_doc = f"""<!doctype html>
 <html lang="es">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d2f27">
   <title>{esc(title)} | {APP_NAME}</title>
-  <style>{CSS}</style>
+  <meta name="description" content="{esc(desc)}">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="{esc(APP_NAME)}">
+  <meta property="og:title" content="{esc(title)} | {esc(APP_NAME)}">
+  <meta property="og:description" content="{esc(desc)}">
+  <meta property="og:image" content="{esc(base)}/favicon.ico">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{esc(title)} | {esc(APP_NAME)}">
+  <meta name="twitter:description" content="{esc(desc)}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap">
+  <link rel="stylesheet" href="/static/app.css?v={ASSET_VERSION}">
 </head>
 <body>
   <div class="bg-grid"></div>
@@ -573,7 +771,7 @@ def render_page(handler, title, body, user=None, wide=False, public_nav=False):
   </main>
   {assistant_widget() if user else ''}
   <div id="toast" class="toast"></div>
-  <script>{JS}</script>
+  <script src="/static/app.js?v={ASSET_VERSION}" defer></script>
 </body>
 </html>"""
     payload = html_doc.encode("utf-8")
@@ -610,6 +808,18 @@ def require_user(handler):
         redirect(handler, "/login")
         return None
     return user
+
+
+def is_admin(user):
+    """Compatible con sqlite3.Row (que no tiene .get)."""
+    if not user:
+        return False
+    if user["email"] == ADMIN_EMAIL:
+        return True
+    try:
+        return bool(user["is_admin"])
+    except (IndexError, KeyError):
+        return False
 
 
 def agent_for_user(agent_id, user_id):
@@ -904,6 +1114,28 @@ def demo_reply(agent, text):
             return f"Entiendo tu molestia y me apena que hayas tenido esa experiencia. Cuéntame qué pasó y busco la mejor forma de ayudarte."
         return _warm(f"Entiendo. Lamento lo ocurrido. Cuéntame el detalle y lo gestiono para que te atiendan bien.")
     return _warm(f"Entiendo. Soy {bot} de {agent['business_name']}. Puedo orientarte y ayudarte a avanzar con una cotización, reserva o contacto. ¿Qué necesitas resolver hoy?")
+
+
+DEMO_AGENT = {
+    "bot_name": "Luna", "business_name": "Veterinaria Pelitos", "business_type": "Veterinaria",
+    "city": "Santiago, Chile", "country_market": "Chile", "currency": "CLP",
+    "knowledge": "Veterinaria para mascotas pequeñas. Consulta general $18.000 CLP. Vacuna desde $12.000. "
+                 "Baño y corte desde $15.000. Atención lunes a sábado de 9:00 a 19:00. Para urgencias o síntomas "
+                 "graves se deriva a WhatsApp. No inventar precios fuera de esta lista.",
+    "services": "Consultas médicas, vacunación, baño y corte, esterilizaciones, alimentos premium y antiparasitarios.",
+    "hours": "Lunes a sábado de 9:00 a 19:00", "sales_mission": "Entender qué necesita la mascota, pedir datos básicos, "
+             "explicar servicios y precios reales, y llevar la conversación hacia reservar o WhatsApp.",
+    "tone": "empático y cercano", "language": "Español (Chile)", "formality": "cercano y respetuoso",
+    "local_vocabulary": "Español chileno suave y natural, sin exagerar modismos.",
+    "forbidden_vocabulary": "No diagnosticar sin evaluación, no prometer tratamientos, no inventar precios.",
+    "special_instructions": "Mantén respuestas breves y cálidas. Invita a reservar cuando haya intención.",
+    "whatsapp": "+56 9 1234 5678", "email": "hola@pelitos.cl", "website": "", "channels": "WhatsApp",
+    "avoid_topics": "", "groq_model": "",
+}
+DEMO_FAQS = [
+    {"question": "¿Necesito reservar hora?", "answer": "Puedes llegar, pero con reserva te atendemos más rápido. Te ayudo a coordinar."},
+    {"question": "¿Atienden urgencias?", "answer": "Para urgencias o síntomas graves te derivamos de inmediato al WhatsApp del equipo."},
+]
 
 
 def detect_lead(text):
@@ -1263,6 +1495,42 @@ def get_or_create_whatsapp_conversation(conn, agent_id, sender_phone):
     return conv_id, history
 
 
+def daily_series(timestamps, days=14):
+    """Cuenta eventos por día en los últimos `days` días (lista del más antiguo al más reciente)."""
+    end = now()
+    start = end - (days - 1) * 86400
+    buckets = [0] * days
+    for ts in timestamps:
+        idx = int((ts - start) // 86400)
+        if 0 <= idx < days:
+            buckets[idx] += 1
+    return buckets
+
+
+def sparkline_svg(values, uid="s", width=320, height=64):
+    """Genera un sparkline SVG inline (área + línea con gradiente), sin dependencias."""
+    vals = [float(v) for v in values] or [0.0]
+    if len(vals) == 1:
+        vals = vals * 2
+    n = len(vals)
+    mn, mx = min(vals), max(vals)
+    span = (mx - mn) or 1.0
+    step = width / (n - 1)
+    pts = []
+    for i, v in enumerate(vals):
+        x = i * step
+        y = height - ((v - mn) / span) * (height - 10) - 5
+        pts.append(f"{x:.1f},{y:.1f}")
+    line = " ".join(pts)
+    area = f"0,{height} {line} {width},{height}"
+    return (
+        f'<div class="spark-wrap"><svg viewBox="0 0 {width} {height}" preserveAspectRatio="none">'
+        f'<defs><linearGradient id="sg" x1="0" x2="1"><stop offset="0" stop-color="#1eb98a"/><stop offset="1" stop-color="#35a7ff"/></linearGradient>'
+        f'<linearGradient id="sa" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#5dffce" stop-opacity=".35"/><stop offset="1" stop-color="#5dffce" stop-opacity="0"/></linearGradient></defs>'
+        f'<polygon class="spark-area" points="{area}"/><polyline class="spark-line" points="{line}"/></svg></div>'
+    )
+
+
 class App(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
@@ -1271,10 +1539,41 @@ class App(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or 0)
         return self.rfile.read(length) if length else b""
 
+    def serve_asset(self, content, content_type):
+        payload = content.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", f"{content_type}; charset=utf-8")
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def serve_favicon(self):
+        try:
+            with open(ICON_PATH, "rb") as f:
+                payload = f.read()
+        except OSError:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/x-icon")
+        self.send_header("Cache-Control", "public, max-age=604800")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        if path == "/widget.js":
+        if path == "/static/app.css":
+            self.serve_asset(CSS, "text/css")
+        elif path == "/static/app.js":
+            self.serve_asset(JS, "application/javascript")
+        elif path == "/static/admin.css":
+            self.serve_asset(ADMIN_CSS, "text/css")
+        elif path == "/favicon.ico":
+            self.serve_favicon()
+        elif path == "/widget.js":
             self.serve_widget_js()
         elif path.startswith("/widget/") and path.endswith(".js"):
             self.serve_public_widget_js(path.split("/")[2][:-3])
@@ -1353,42 +1652,72 @@ class App(BaseHTTPRequestHandler):
             user = require_user(self)
             if user:
                 self.page_admin(user)
+        elif path == "/admin/backup":
+            user = require_user(self)
+            if user:
+                self.download_backup(user)
         else:
             self.send_error(404)
 
     def page_home(self):
-        body = """
-        <section class="landing-hero">
+        pricing_cards = ""
+        for key in PLAN_ORDER:
+            p = PLANS[key]
+            featured = key == "pro"
+            pricing_cards += (
+                f'<article class="pricing-card{" featured" if featured else ""}">'
+                f'{"<div class=\"plan-badge\">Recomendado</div>" if featured else ""}'
+                f'<span>{esc(p["name"])}</span>'
+                f'<strong>${p["price"]}<small>/mes</small></strong>'
+                f'<p>{esc(p["tagline"])}</p>'
+                f'<ul class="plan-feats"><li>{p["agent_limit"]} vendedores IA</li><li>{p["message_limit"]:,} mensajes/mes</li><li>WhatsApp + oportunidades</li></ul>'
+                f'<a class="btn{" primary" if featured else ""}" href="/login">Empezar</a>'
+                f'</article>'
+            )
+        body = f"""
+        <section class="landing-hero reveal">
           <div class="landing-copy">
             <p class="eyebrow">Plataforma comercial para LATAM</p>
-            <h1>Vendedores IA para WhatsApp e Instagram.</h1>
-            <p>Entrena asistentes comerciales con información real del negocio, prueba conversaciones y convierte consultas en oportunidades listas para seguimiento.</p>
+            <h1>Vendedores IA que atienden tu WhatsApp <span class="grad-text">mientras tú vendes.</span></h1>
+            <p>Entrena un asistente comercial con la forma real de vender de tu negocio. Responde al instante, califica clientes y convierte consultas en oportunidades listas para cerrar.</p>
             <div class="actions">
-              <a class="btn primary big-cta" href="/login">Entrar al panel</a>
-              <a class="btn" href="#producto">Ver plataforma</a>
+              <a class="btn primary big-cta" href="/login">Crea tu vendedor IA gratis</a>
+              <a class="btn" href="#demo">Probarlo ahora ↓</a>
             </div>
             <div class="landing-metrics">
               <article><strong>24/7</strong><span>Atención inicial</span></article>
-              <article><strong>LATAM</strong><span>Tono y cultura</span></article>
-              <article><strong>IA + CRM</strong><span>Venta y seguimiento</span></article>
+              <article><strong>LATAM</strong><span>Tono y cultura local</span></article>
+              <article><strong>2 min</strong><span>Para crear el primero</span></article>
             </div>
           </div>
-          <div class="landing-console">
-            <div class="console-bar"><span></span><strong>Centro de control</strong><em>activo</em></div>
-            <div class="console-stats">
-              <article><strong>18</strong><span>Oportunidades</span></article>
-              <article><strong>71%</strong><span>Calidad</span></article>
-              <article><strong>5</strong><span>Ventas listas</span></article>
+          <div class="landing-console" id="demo">
+            <div class="console-bar"><span></span><strong>Probá un vendedor IA en vivo</strong><em id="demoBadge">en línea</em></div>
+            <div class="demo-messages" id="demoMessages">
+              <p class="demo-msg bot">Hola, soy Luna de Veterinaria Pelitos. Cuéntame qué necesita tu mascota y te ayudo a avanzar. 🐾</p>
             </div>
-            <div class="console-feed">
-              <div><b>Studio Corte</b><span>Cliente pidió precio y horario por WhatsApp</span></div>
-              <div><b>Aura Clínica</b><span>Interesada en evaluación estética</span></div>
-              <div><b>Urban Market</b><span>Consulta por talla, envío y garantía</span></div>
+            <div class="demo-chips">
+              <button type="button" onclick="demoQuick('¿Cuánto cuesta una consulta?')">Precio consulta</button>
+              <button type="button" onclick="demoQuick('¿Tienen hora para mañana?')">Agendar hora</button>
+              <button type="button" onclick="demoQuick('Quiero hablar por WhatsApp')">WhatsApp</button>
             </div>
+            <form class="demo-form" id="demoForm" onsubmit="return sendDemo(event)">
+              <input id="demoInput" placeholder="Escribe como si fueras un cliente…" autocomplete="off" maxlength="280">
+              <button type="submit" aria-label="Enviar">➤</button>
+            </form>
           </div>
         </section>
 
-        <section id="producto" class="landing-section">
+        <section class="landing-section how-section reveal">
+          <p class="eyebrow">Cómo funciona</p>
+          <h2>De cero a vendiendo en 3 pasos.</h2>
+          <div class="how-grid">
+            <article class="how-step"><div class="how-num">1</div><strong>Describe tu negocio</strong><p>Cargas servicios, precios, tono y reglas. Sin código ni configuración técnica.</p></article>
+            <article class="how-step"><div class="how-num">2</div><strong>Pruébalo y ajústalo</strong><p>Conversas con tu vendedor IA, ves su calidad y lo afinas hasta que vende como tú.</p></article>
+            <article class="how-step"><div class="how-num">3</div><strong>Conéctalo y crece</strong><p>Lo enlazas a WhatsApp o a un link, y empiezas a recibir oportunidades calificadas.</p></article>
+          </div>
+        </section>
+
+        <section id="producto" class="landing-section reveal">
           <p class="eyebrow">Producto</p>
           <h2>Todo lo necesario para crear, probar y operar vendedores IA.</h2>
           <div class="infra-map">
@@ -1418,15 +1747,12 @@ class App(BaseHTTPRequestHandler):
 
         <section id="planes" class="landing-section">
           <p class="eyebrow">Modelo comercial</p>
-          <h2>Planes pensados para vender por negocio o por agencia.</h2>
-          <div class="pricing-grid">
-            <article class="pricing-card"><span>Inicial</span><h3>Para validar</h3><strong>$19<small>/mes</small></strong><p>Link comercial, vendedor IA y oportunidades.</p></article>
-            <article class="pricing-card active"><span>Recomendado</span><h3>Crecimiento</h3><strong>$49<small>/mes</small></strong><p>Más vendedores, más mensajes y panel comercial.</p></article>
-            <article class="pricing-card"><span>Agencia</span><h3>Para varios clientes</h3><strong>$149<small>/mes</small></strong><p>Gestión multi-negocio y capacidad ampliada.</p></article>
-          </div>
+          <h2>Planes que crecen con tu negocio.</h2>
+          <p class="section-sub">Empieza gratis, sin tarjeta. Sube de plan cuando tu vendedor IA ya te traiga clientes.</p>
+          <div class="pricing-grid">{pricing_cards}</div>
         </section>
 
-        <section id="contacto" class="landing-section contact-band">
+        <section id="contacto" class="landing-section contact-band reveal">
           <div>
             <p class="eyebrow">Empezar</p>
             <h2>Empieza con un vendedor IA entrenado y una operación comercial clara.</h2>
@@ -1827,7 +2153,7 @@ class App(BaseHTTPRequestHandler):
         redirect(self, "/connect/whatsapp")
 
     def page_admin(self, user):
-        if not (user["email"] == ADMIN_EMAIL or user.get("is_admin")):
+        if not is_admin(user):
             self.send_error(403, "Acceso denegado")
             return
         month_start = now() - 30 * 86400
@@ -1846,34 +2172,48 @@ class App(BaseHTTPRequestHandler):
             new_convs_week = conn.execute("SELECT COUNT(*) c FROM conversations WHERE created_at > ?", (week_start,)).fetchone()["c"]
             wa_connections_all = conn.execute("SELECT * FROM whatsapp_connections ORDER BY created_at DESC").fetchall()
             plan_counts = {"starter": 0, "pro": 0, "agency": 0}
-            mrr_rates = {"starter": 29, "pro": 79, "agency": 199}
+            mrr_rates = {k: v["price"] for k, v in PLANS.items()}
+            # Agregados por usuario en consultas únicas (evita N+1 al crecer la base de clientes).
+            agents_by_user = {r["user_id"]: r["c"] for r in conn.execute("SELECT user_id, COUNT(*) c FROM agents GROUP BY user_id")}
+            wa_by_user = {r["user_id"]: r["c"] for r in conn.execute("SELECT user_id, COUNT(*) c FROM whatsapp_connections WHERE status='active' GROUP BY user_id")}
+            msgs_by_user = {r["user_id"]: r["c"] for r in conn.execute(
+                "SELECT agents.user_id user_id, COUNT(*) c FROM messages JOIN conversations ON conversations.id=messages.conversation_id JOIN agents ON agents.id=conversations.agent_id WHERE messages.created_at > ? GROUP BY agents.user_id",
+                (month_start,),
+            )}
+            leads_by_user = {r["user_id"]: r["c"] for r in conn.execute(
+                "SELECT agents.user_id user_id, COUNT(*) c FROM leads JOIN agents ON agents.id=leads.agent_id GROUP BY agents.user_id"
+            )}
+            day0 = now() - 13 * 86400
+            msg_ts_all = [r["created_at"] for r in conn.execute("SELECT created_at FROM messages WHERE created_at>=?", (day0,))]
+            user_ts_all = [r["created_at"] for r in conn.execute("SELECT created_at FROM users WHERE created_at>=?", (day0,))]
             user_stats = []
             for u in users:
                 plan = u["plan"] or "starter"
                 plan_counts[plan] = plan_counts.get(plan, 0) + 1
-                agents_count = conn.execute("SELECT COUNT(*) c FROM agents WHERE user_id=?", (u["id"],)).fetchone()["c"]
-                wa_connected = conn.execute("SELECT COUNT(*) c FROM whatsapp_connections WHERE user_id=? AND status='active'", (u["id"],)).fetchone()["c"]
-                msgs_month = conn.execute(
-                    "SELECT COUNT(*) c FROM messages WHERE created_at > ? AND conversation_id IN (SELECT id FROM conversations WHERE agent_id IN (SELECT id FROM agents WHERE user_id=?))",
-                    (month_start, u["id"]),
-                ).fetchone()["c"]
-                leads_count = conn.execute(
-                    "SELECT COUNT(*) c FROM leads WHERE agent_id IN (SELECT id FROM agents WHERE user_id=?)",
-                    (u["id"],),
-                ).fetchone()["c"]
                 user_stats.append({
                     "id": u["id"], "name": u["name"], "email": u["email"],
                     "plan": plan, "sub_status": u["sub_status"] or "demo",
-                    "agents": agents_count, "wa_connected": wa_connected,
-                    "msgs_month": msgs_month, "message_limit": u["message_limit"] or 300,
+                    "agents": agents_by_user.get(u["id"], 0), "wa_connected": wa_by_user.get(u["id"], 0),
+                    "msgs_month": msgs_by_user.get(u["id"], 0), "message_limit": u["message_limit"] or 300,
                     "agent_limit": u["agent_limit"] or 2,
-                    "leads": leads_count, "created_at": u["created_at"],
+                    "leads": leads_by_user.get(u["id"], 0), "created_at": u["created_at"],
                 })
 
         mrr_potential = sum(mrr_rates.get(p, 0) * c for p, c in plan_counts.items())
         total_users = len(users)
         active_users = sum(1 for u in user_stats if u["msgs_month"] > 0)
         conversion_rate = round(active_users / total_users * 100) if total_users else 0
+        msg_series = daily_series(msg_ts_all, 14)
+        user_series = daily_series(user_ts_all, 14)
+        spark_msgs = sparkline_svg(msg_series, "amsg")
+        spark_users = sparkline_svg(user_series, "ausr")
+        # Estado de respaldos / persistencia de datos
+        db_bytes = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+        db_size = f"{db_bytes/1048576:.1f} MB" if db_bytes >= 1048576 else f"{max(1, db_bytes//1024)} KB"
+        backup_files = sorted(glob.glob(os.path.join(BACKUP_DIR, "botbuilder-*.sqlite3")))
+        last_backup = time.strftime("%d/%m/%Y %H:%M", time.localtime(os.path.getmtime(backup_files[-1]))) if backup_files else "—"
+        persist = "/var/data" in DATA_DIR or os.environ.get("DATA_DIR")
+        persist_label = "Disco persistente activo" if persist else "⚠ Sin disco persistente (configura DATA_DIR en Render)"
 
         plan_dist_html = (
             f'<div class="pdc s"><strong>{plan_counts.get("starter",0)}</strong><span>Starter</span></div>'
@@ -1920,9 +2260,27 @@ class App(BaseHTTPRequestHandler):
 
         body = f"""
         <div class="sys-grid">
-          <div class="sys-card"><div class="sys-icon ok">🚀</div><div class="sys-text"><strong>Servidor activo</strong><span>Python HTTP · Puerto 8765</span></div></div>
-          <div class="sys-card"><div class="sys-icon ok">🤖</div><div class="sys-text"><strong>IA operativa</strong><span>Groq LLM conectado</span></div></div>
+          <div class="sys-card"><div class="sys-icon ok">⚡</div><div class="sys-text"><strong>{conversion_rate}% de cuentas activas</strong><span>{active_users} de {total_users} con actividad</span></div></div>
+          <div class="sys-card"><div class="sys-icon {'ok' if GROQ_API_KEY else 'warn'}">🤖</div><div class="sys-text"><strong>{'IA operativa' if GROQ_API_KEY else 'IA en modo demo'}</strong><span>{'Groq LLM conectado' if GROQ_API_KEY else 'Configura GROQ_API_KEY'}</span></div></div>
           <div class="sys-card"><div class="sys-icon {'ok' if total_connections > 0 else 'warn'}">📱</div><div class="sys-text"><strong>{total_connections} WhatsApp activos</strong><span>Meta Business API</span></div></div>
+        </div>
+
+        <div class="chart-grid">
+          <div class="chart-card"><div class="chart-head"><h3>Mensajes · 14 días</h3><strong>{sum(msg_series):,}</strong></div>{spark_msgs}</div>
+          <div class="chart-card"><div class="chart-head"><h3>Nuevos clientes · 14 días</h3><strong>{sum(user_series)}</strong></div>{spark_users}</div>
+        </div>
+
+        <div class="as" id="datos">
+          <div class="ash2"><h2>Respaldos y datos</h2><span>Control total de tu información</span></div>
+          <div class="ac2" style="padding:18px">
+            <div class="backup-grid">
+              <div class="backup-stat"><span class="bk-ic {'ok' if persist else 'warn'}">💾</span><div><strong>{esc(persist_label)}</strong><small>Carpeta de datos: {esc(DATA_DIR)}</small></div></div>
+              <div class="backup-stat"><span class="bk-ic ok">🗄️</span><div><strong>{db_size}</strong><small>Tamaño de la base de datos</small></div></div>
+              <div class="backup-stat"><span class="bk-ic ok">🛟</span><div><strong>{len(backup_files)} respaldos</strong><small>Último: {last_backup} · auto cada 6 h</small></div></div>
+            </div>
+            <a class="ab pri" href="/admin/backup" style="margin-top:16px;display:inline-flex;text-decoration:none">⬇ Descargar copia completa ahora</a>
+            <p style="color:#3d6b5c;font-size:12px;margin-top:10px">Se genera una copia consistente de toda la base (clientes, agentes, conversaciones, leads y conexiones) y se descarga a tu equipo. Guárdala donde quieras: tienes el control absoluto de tus datos.</p>
+          </div>
         </div>
 
         <div class="kg">
@@ -1961,17 +2319,45 @@ class App(BaseHTTPRequestHandler):
         """
         render_admin_page(self, "Admin Dashboard", body)
 
+    def download_backup(self, user):
+        """Descarga una copia consistente y fresca de toda la base (solo admin)."""
+        if not is_admin(user):
+            self.send_error(403, "Acceso denegado")
+            return
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        tmp = os.path.join(BACKUP_DIR, f"_download-{stamp}.sqlite3")
+        if not backup_database(tmp):
+            self.send_error(500, "No se pudo generar el respaldo")
+            return
+        try:
+            with open(tmp, "rb") as f:
+                payload = f.read()
+        except OSError:
+            self.send_error(500, "No se pudo leer el respaldo")
+            return
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="botbuilder-{stamp}.sqlite3"')
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
     def admin_set_plan(self, user):
-        if not (user["email"] == ADMIN_EMAIL or user.get("is_admin")):
+        if not is_admin(user):
             self.send_error(403)
             return
         form = parse_form(self.read_body())
         target_id = int(form.get("target_user_id") or 0)
-        plans = {"starter": (2, 300), "pro": (10, 3000), "agency": (50, 20000)}
         plan = form.get("plan", "starter")
-        if plan not in plans:
+        if plan not in PLANS:
             plan = "starter"
-        agent_limit, message_limit = plans[plan]
+        agent_limit, message_limit = plan_limits(plan)
         with db() as conn:
             conn.execute(
                 "INSERT INTO subscriptions (user_id,plan,agent_limit,message_limit,status,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET plan=excluded.plan, agent_limit=excluded.agent_limit, message_limit=excluded.message_limit",
@@ -2001,6 +2387,8 @@ class App(BaseHTTPRequestHandler):
                 self.save_agent(user)
         elif path in ("/api/groq-agent", "/api/agent-chat"):
             self.api_groq_agent()
+        elif path == "/api/demo-chat":
+            self.api_demo_chat()
         elif path == "/api/improve-knowledge":
             user = require_user(self)
             if user:
@@ -2035,65 +2423,107 @@ class App(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def page_login(self):
-        body = """
-        <section class="auth-grid login-grid">
-          <article class="hero-panel">
-            <p class="eyebrow">Agencia IA comercial para LATAM</p>
-            <h1>Vendedores virtuales que atienden, califican y derivan por WhatsApp.</h1>
-            <p class="hero-copy">Crea vendedores IA entrenados con la forma real de vender de cada negocio: país, tono, costumbres, objeciones, agenda, cotizaciones y seguimiento.</p>
-            <div class="feature-row"><span>Chile, México, Colombia y más</span><span>Respuestas en tiempo real</span><span>Oportunidades listas</span></div>
-            <div class="signal-grid">
-              <div><strong>01</strong><span>El negocio escribe cómo vende.</span></div>
-              <div><strong>02</strong><span>El vendedor aprende límites, tono y cultura.</span></div>
-              <div><strong>03</strong><span>La conversación convierte consultas en oportunidades.</span></div>
-            </div>
-            <div class="mini-chat">
-              <div class="mini-top"><span></span> Demo vendedor IA</div>
-              <p class="mini bot">Hola, soy Luna. Cuéntame qué necesita tu mascota y te ayudo a agendar.</p>
-              <p class="mini user">Quiero saber precio de vacunas y reservar.</p>
-              <p class="mini bot">Perfecto. Para orientarte bien, dime edad de tu mascota y comuna. Si quieres avanzar rápido, te derivo al WhatsApp del equipo.</p>
-            </div>
-          </article>
-          <article class="card login-card">
-            <h2>Entrar</h2>
-            <form method="post" action="/login" class="stack">
-              <label>Correo<input name="email" type="email" required placeholder="tucorreo@negocio.com"></label>
-              <label>Contraseña<input name="password" type="password" required></label>
-              <button class="btn primary">Ingresar</button>
-            </form>
-            <hr>
-            <h2>Crear cuenta</h2>
-            <form method="post" action="/register" class="stack">
-              <label>Nombre<input name="name" required placeholder="Tu nombre"></label>
-              <label>Correo<input name="email" type="email" required></label>
-              <label>Contraseña<input name="password" type="password" required minlength="4"></label>
-              <button class="btn">Crear cuenta</button>
-            </form>
-          </article>
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        err = qs.get("error", [""])[0]
+        messages = {
+            "login": "Correo o contraseña incorrectos.",
+            "email": "Ese correo ya tiene una cuenta. Inicia sesión.",
+            "datos": "Revisa los datos: la contraseña debe tener al menos 6 caracteres.",
+            "ratelimit": "Demasiados intentos. Espera unos minutos e inténtalo de nuevo.",
+        }
+        alert = (
+            f'<div style="max-width:420px;margin:0 auto 16px;padding:12px 16px;border-radius:10px;'
+            f'background:#fde8e8;color:#a32020;border:1px solid #f5c2c2;font-size:14px;text-align:center">'
+            f'{esc(messages[err])}</div>'
+        ) if err in messages else ""
+        body = f"""{alert}""" + """
+        <section class="auth-stage" id="authStage">
+          <div class="stage-aurora" aria-hidden="true"></div>
+          <div class="stage-grid" aria-hidden="true"></div>
+          <div class="stage-orbs" aria-hidden="true"><span class="orb o1"></span><span class="orb o2"></span><span class="orb o3"></span><span class="orb o4"></span></div>
+          <div class="stage-glow" id="stageGlow" aria-hidden="true"></div>
+
+          <div class="auth-grid login-grid">
+            <article class="hero-panel login-hero">
+              <div class="live-feed" id="liveFeed" aria-hidden="true"></div>
+              <p class="eyebrow">Agencia IA comercial para LATAM</p>
+              <h1>Tu vendedor IA <span class="grad-text">nunca duerme.</span></h1>
+              <p class="hero-copy">Atiende, califica y deriva clientes por WhatsApp 24/7 — con el tono, la cultura y la forma de vender de tu negocio.</p>
+
+              <div class="live-chat" id="liveChat">
+                <div class="lc-head"><span class="lc-dot"></span><strong>Luna · Vendedora IA</strong><em id="lcStatus">en línea</em></div>
+                <div class="lc-body" id="lcBody"></div>
+              </div>
+
+              <div class="trust-stats">
+                <div><strong data-count="24" data-suffix="/7">0</strong><span>Atención</span></div>
+                <div><strong data-count="3" data-suffix="s">0</strong><span>Responde en</span></div>
+                <div><strong data-count="100" data-suffix="%">0</strong><span>Tono LATAM</span></div>
+              </div>
+            </article>
+
+            <article class="card login-card" id="loginCard">
+              <div class="lc-shine" aria-hidden="true"></div>
+              <div class="card-tabs" id="cardTabs">
+                <button type="button" class="ct-btn active" data-tab="login">Entrar</button>
+                <button type="button" class="ct-btn" data-tab="register">Crear cuenta</button>
+              </div>
+              <form method="post" action="/login" class="stack auth-form" data-form="login">
+                <label>Correo<input name="email" type="email" required placeholder="tucorreo@negocio.com"></label>
+                <label>Contraseña<input name="password" type="password" required placeholder="••••••••"></label>
+                <button class="btn primary">Ingresar →</button>
+                <p class="form-foot">¿Sin cuenta? <a href="#" data-goto="register">Créala gratis en segundos</a></p>
+              </form>
+              <form method="post" action="/register" class="stack auth-form" data-form="register" hidden>
+                <label>Nombre<input name="name" required placeholder="Tu nombre"></label>
+                <label>Correo<input name="email" type="email" required placeholder="tucorreo@negocio.com"></label>
+                <label>Contraseña<input name="password" type="password" required minlength="6" placeholder="Mínimo 6 caracteres"></label>
+                <button class="btn primary">Crear mi vendedor IA →</button>
+                <p class="form-foot">¿Ya tienes cuenta? <a href="#" data-goto="login">Inicia sesión</a></p>
+              </form>
+              <div class="card-assure">🔒 Datos cifrados · Sin tarjeta para empezar</div>
+            </article>
+          </div>
         </section>
         """
         render_page(self, "Entrar", body, public_nav=True)
 
     def register(self):
         form = parse_form(self.read_body())
+        if rate_limited(f"register:{client_ip(self)}", limit=5, window=600):
+            redirect(self, "/login?error=ratelimit")
+            return
+        name = form.get("name", "").strip()
+        email = form.get("email", "").lower().strip()
+        password = form.get("password", "")
+        if not name or "@" not in email or len(password) < 6:
+            redirect(self, "/login?error=datos")
+            return
         try:
             with db() as conn:
                 conn.execute(
                     "INSERT INTO users (name,email,password_hash,created_at) VALUES (?,?,?,?)",
-                    (form["name"].strip(), form["email"].lower().strip(), hash_password(form["password"]), now()),
+                    (name[:120], email[:200], hash_password(password), now()),
                 )
         except sqlite3.IntegrityError:
             redirect(self, "/login?error=email")
             return
-        self.create_session(form["email"].lower().strip())
+        self.create_session(email)
 
     def login(self):
         form = parse_form(self.read_body())
+        ip = client_ip(self)
+        if rate_limited(f"login:{ip}", limit=8, window=300):
+            redirect(self, "/login?error=ratelimit")
+            return
         with db() as conn:
             user = conn.execute("SELECT * FROM users WHERE email=?", (form["email"].lower().strip(),)).fetchone()
         if not user or not verify_password(form["password"], user["password_hash"]):
             redirect(self, "/login?error=login")
             return
+        if needs_rehash(user["password_hash"]):
+            with db() as conn:
+                conn.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(form["password"]), user["id"]))
         self.create_session(user["email"])
 
     def create_session(self, email):
@@ -2153,8 +2583,28 @@ class App(BaseHTTPRequestHandler):
                 "SELECT conversations.*, agents.business_name, COUNT(messages.id) messages FROM conversations JOIN agents ON agents.id=conversations.agent_id LEFT JOIN messages ON messages.conversation_id=conversations.id WHERE agents.user_id=? GROUP BY conversations.id ORDER BY conversations.created_at DESC LIMIT 5",
                 (user["id"],),
             ).fetchall()
-            faqs_by_agent = {a["id"]: conn.execute("SELECT * FROM faqs WHERE agent_id=?", (a["id"],)).fetchall() for a in agents}
+            faqs_by_agent = {a["id"]: [] for a in agents}
+            if agents:
+                placeholders = ",".join("?" * len(agents))
+                for f in conn.execute(f"SELECT * FROM faqs WHERE agent_id IN ({placeholders}) ORDER BY id", [a["id"] for a in agents]):
+                    faqs_by_agent.setdefault(f["agent_id"], []).append(f)
+            day0 = now() - 13 * 86400
+            msg_ts = [r["created_at"] for r in conn.execute(
+                "SELECT messages.created_at FROM messages JOIN conversations ON conversations.id=messages.conversation_id JOIN agents ON agents.id=conversations.agent_id WHERE agents.user_id=? AND messages.created_at>=?",
+                (user["id"], day0),
+            )]
+            wa_connected = conn.execute("SELECT COUNT(*) c FROM whatsapp_connections WHERE user_id=? AND status='active'", (user["id"],)).fetchone()["c"]
 
+        series = daily_series(msg_ts, 14)
+        msgs_14 = sum(series)
+        first_half, second_half = sum(series[:7]), sum(series[7:])
+        if first_half:
+            trend_pct = round((second_half - first_half) / first_half * 100)
+        else:
+            trend_pct = 100 if second_half else 0
+        trend_cls = "trend-up" if trend_pct >= 0 else "trend-down"
+        trend_txt = f"{'▲' if trend_pct >= 0 else '▼'} {abs(trend_pct)}% vs. semana previa"
+        has_whatsapp = wa_connected > 0 or any(a["whatsapp"] for a in agents)
         scored = [(a, *quality_score(a, faqs_by_agent.get(a["id"], [])), agent_status(a, faqs_by_agent.get(a["id"], []))) for a in agents]
         avg_quality = round(sum(item[1] for item in scored) / len(scored)) if scored else 0
         ready = sum(1 for item in scored if item[3][1] == "ready")
@@ -2168,11 +2618,46 @@ class App(BaseHTTPRequestHandler):
         funnel_rows = "".join([f"<div><span>{esc(status_labels.get(row['status'], row['status'] or 'Sin estado'))}</span><strong>{row['c']}</strong><i style='width:{max(6, round(row['c'] / status_total * 100))}%'></i></div>" for row in status_counts]) or "<p class='hint-line'>Aún no hay oportunidades para medir.</p>"
         activity_rows = "".join([f"<li><strong>{esc(a['business_name'])}</strong><span>{a['c']} conversaciones</span></li>" for a in agent_activity]) or "<li><span>Crea un vendedor IA para medir actividad.</span></li>"
 
+        # Onboarding: se muestra mientras falte completar alguno de los 3 pasos clave.
+        steps = [
+            (bool(agents), "Crea tu vendedor IA", "Describe tu negocio y entrena al asistente.", "/agents/new", "Crear ahora"),
+            (has_whatsapp, "Conecta WhatsApp", "Para recibir y responder consultas reales.", "/connect/whatsapp", "Conectar"),
+            (conversations_total > 0, "Recibe tu primera conversación", "Comparte tu link o prueba el vendedor.", "/conversations", "Ver cómo"),
+        ]
+        onboard_html = ""
+        if not all(done for done, *_ in steps):
+            done_count = sum(1 for done, *_ in steps if done)
+            cards = ""
+            for done, title, desc, href, cta in steps:
+                link = "" if done else f'<a href="{href}">{esc(cta)} →</a>'
+                check = "✓" if done else "○"
+                cards += (
+                    f'<div class="ob-step {"done" if done else ""}">'
+                    f'<div class="ob-check">{check}</div>'
+                    f'<div><strong>{esc(title)}</strong><span>{esc(desc)}</span>{link}</div></div>'
+                )
+            onboard_html = (
+                f'<section class="onboard reveal"><h2>Pon en marcha tu vendedor IA</h2>'
+                f'<p>Completaste {done_count} de 3 pasos. Termínalos para empezar a recibir oportunidades.</p>'
+                f'<div class="onboard-steps">{cards}</div></section>'
+            )
+
+        kpi_hero = (
+            f'<section class="kpi-hero">'
+            f'<div class="kpi-spark"><h3>Oportunidades calientes</h3><div class="big">{hot_leads}</div>'
+            f'<div class="sub">{leads} oportunidades totales · {won_leads} ganadas</div></div>'
+            f'<div class="kpi-spark"><h3>Actividad · últimos 14 días</h3><div class="big">{msgs_14:,} <span class="{trend_cls}" style="font-size:14px">{trend_txt}</span></div>'
+            f'{sparkline_svg(series, "dash")}</div>'
+            f'</section>'
+        )
+
         body = f"""
         <section class="control-hero">
           <div><p class="eyebrow">Centro de control · Plan {esc(sub['plan']).title()}</p><h1>Hola, {esc(user['name'])}</h1><p>Administra vendedores IA, oportunidades y conversaciones desde un solo lugar.</p></div>
           <div class="actions"><a class="btn" href="/inbox">Abrir bandeja comercial</a><a class="btn primary big-cta" href="/agents/new">Crear vendedor IA</a></div>
         </section>
+        {onboard_html}
+        {kpi_hero}
         <section class="stats">
           <article><strong>{active}</strong><span>Vendedores activos</span></article>
           <article><strong>{ready}</strong><span>Listos para WhatsApp</span></article>
@@ -2292,12 +2777,7 @@ class App(BaseHTTPRequestHandler):
                 {input_field('channels','Canales activos',(data.get('channels','') or 'WhatsApp').replace('Web, WhatsApp','WhatsApp'), placeholder='WhatsApp')}
                 {input_field('avoid_topics','Qué temas debe evitar',data.get('avoid_topics',''), placeholder='Descuentos no aprobados, política, competencia')}
               </div>
-              <div class="subsection-title">WhatsApp Business API (respuestas automáticas)</div>
-              <p class="section-help">Conecta la API de Meta para que el vendedor IA responda mensajes de WhatsApp automáticamente. Obtén estos datos en <strong>developers.facebook.com</strong> → tu app → WhatsApp → Configuración de API.</p>
-              <div class="form-grid">
-                {input_field('meta_phone_id','Phone Number ID',data.get('meta_phone_id',''), placeholder='123456789012345')}
-                {input_field('meta_access_token','Access Token (permanente)',data.get('meta_access_token',''), placeholder='EAAxxxxx...')}
-              </div>
+              <p class="section-help">Para que el vendedor IA responda WhatsApp automáticamente, conéctalo con un clic desde <strong>Conectar WhatsApp</strong> usando la autorización oficial de Meta. No necesitas copiar tokens manualmente.</p>
               <div class="subsection-title">Opcional: botón para página web</div>
               <div class="form-grid">
                 {input_field('widget_color','Color principal del botón',data.get('widget_color','#1d9e75'), placeholder='#1d9e75')}
@@ -2347,7 +2827,7 @@ class App(BaseHTTPRequestHandler):
             "business_name","business_type","country_market","currency","city","hours","whatsapp","email","website",
             "bot_name","language","tone","formality","knowledge","services","local_vocabulary","forbidden_vocabulary",
             "sales_mission","special_instructions","channels","avoid_topics","groq_model","widget_color",
-            "widget_title","widget_welcome","widget_label","public_slug","meta_phone_id","meta_access_token"
+            "widget_title","widget_welcome","widget_label","public_slug"
         ]
         values = [form.get(f, "").strip() for f in fields]
         with db() as conn:
@@ -2445,6 +2925,9 @@ class App(BaseHTTPRequestHandler):
         render_page(self, "Prueba del vendedor", body, current_user(self), wide=True)
 
     def api_groq_agent(self):
+        if rate_limited(f"chat:{client_ip(self)}", limit=20, window=60):
+            json_response(self, {"reply": "Estás enviando mensajes muy rápido. Espera unos segundos e inténtalo de nuevo.", "conversation_id": None, "intent": "", "lead_created": False}, 429)
+            return
         body = self.read_body()
         try:
             data = json.loads(body.decode("utf-8"))
@@ -2465,9 +2948,10 @@ class App(BaseHTTPRequestHandler):
             owner_id = agent["user_id"]
             sub = conn.execute("SELECT * FROM subscriptions WHERE user_id=?", (owner_id,)).fetchone()
             if sub:
+                month_start = now() - 30 * 86400
                 used = conn.execute(
-                    "SELECT COUNT(*) c FROM messages JOIN conversations ON conversations.id=messages.conversation_id JOIN agents ON agents.id=conversations.agent_id WHERE agents.user_id=? AND messages.role='user'",
-                    (owner_id,),
+                    "SELECT COUNT(*) c FROM messages JOIN conversations ON conversations.id=messages.conversation_id JOIN agents ON agents.id=conversations.agent_id WHERE agents.user_id=? AND messages.role='assistant' AND messages.created_at > ?",
+                    (owner_id, month_start),
                 ).fetchone()["c"]
                 if used >= sub["message_limit"]:
                     json_response(self, {"reply": "Este vendedor IA alcanzó el límite de mensajes del plan actual. El negocio puede actualizar su plan para continuar.", "conversation_id": None, "intent": "", "lead_created": False})
@@ -2500,6 +2984,20 @@ class App(BaseHTTPRequestHandler):
                 lead_created = upsert_lead(conn, agent_id, conv_id, visitor.get("name", ""), contact, intent, last_text)
         json_response(self, {"reply": reply, "conversation_id": conv_id, "intent": infer_intent(messages[-1]["content"] if messages else ""), "lead_created": lead_created})
 
+    def api_demo_chat(self):
+        """Demo en vivo para la landing: conversa con un vendedor IA de ejemplo sin tocar la base de datos."""
+        if rate_limited(f"demo:{client_ip(self)}", limit=15, window=60):
+            json_response(self, {"reply": "Estás probando muy rápido 😅. Espera unos segundos y vuelve a intentarlo."}, 429)
+            return
+        try:
+            data = json.loads(self.read_body().decode("utf-8"))
+        except json.JSONDecodeError:
+            json_response(self, {"error": "JSON inválido"}, 400)
+            return
+        messages = normalize_messages(data.get("messages") or [])
+        reply = call_groq(DEMO_AGENT, DEMO_FAQS, messages)
+        json_response(self, {"reply": reply})
+
     def webhook_whatsapp_verify(self):
         """Verifica el webhook con Meta (GET request)."""
         parsed = urllib.parse.urlparse(self.path)
@@ -2522,6 +3020,10 @@ class App(BaseHTTPRequestHandler):
         """Recibe y procesa mensajes de WhatsApp desde Meta."""
         body = self.read_body()
         sig = self.headers.get("X-Hub-Signature-256", "")
+        # Si hay secreto configurado, la firma es obligatoria (evita inyección de mensajes falsos).
+        if META_APP_SECRET and not sig:
+            self.send_error(403, "Missing signature")
+            return
         if sig and not verify_meta_signature(body, sig):
             self.send_error(403, "Invalid signature")
             return
@@ -2549,21 +3051,17 @@ class App(BaseHTTPRequestHandler):
             return
 
         with db() as conn:
-            agent_row = conn.execute(
-                "SELECT * FROM agents WHERE meta_phone_id=? LIMIT 1",
+            # La conexión se resuelve por la autorización oficial de Meta (OAuth → whatsapp_connections).
+            wa_conn = conn.execute(
+                "SELECT * FROM whatsapp_connections WHERE phone_number_id=? AND status='active' LIMIT 1",
                 (phone_number_id,),
             ).fetchone()
-            wa_conn = None
-            if not agent_row:
-                wa_conn = conn.execute(
-                    "SELECT * FROM whatsapp_connections WHERE phone_number_id=? AND status='active' LIMIT 1",
-                    (phone_number_id,),
-                ).fetchone()
-                if wa_conn:
-                    agent_row = conn.execute(
-                        "SELECT * FROM agents WHERE user_id=? ORDER BY updated_at DESC LIMIT 1",
-                        (wa_conn["user_id"],),
-                    ).fetchone()
+            if not wa_conn:
+                return
+            agent_row = conn.execute(
+                "SELECT * FROM agents WHERE user_id=? ORDER BY updated_at DESC LIMIT 1",
+                (wa_conn["user_id"],),
+            ).fetchone()
             if not agent_row:
                 return
 
@@ -2601,17 +3099,24 @@ class App(BaseHTTPRequestHandler):
                 contact = extract_contact(msg_text) or sender
                 upsert_lead(conn, agent_id, conv_id, "", contact, intent, msg_text[:300])
 
-        if wa_conn:
-            access_token = decrypt_token(wa_conn["access_token_enc"]) or META_ACCESS_TOKEN
-        else:
-            access_token = agent_row["meta_access_token"] or META_ACCESS_TOKEN
+        access_token = decrypt_token(wa_conn["access_token_enc"]) or META_ACCESS_TOKEN
         send_whatsapp_message(phone_number_id, access_token, sender, reply)
 
     def api_lead(self):
-        data = json.loads(self.read_body().decode("utf-8"))
-        agent_id = int(data.get("agent_id") or 0)
+        if rate_limited(f"lead:{client_ip(self)}", limit=30, window=60):
+            json_response(self, {"error": "rate_limited"}, 429)
+            return
+        try:
+            data = json.loads(self.read_body().decode("utf-8"))
+            agent_id = int(data.get("agent_id") or 0)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            json_response(self, {"error": "datos inválidos"}, 400)
+            return
+        if not public_agent(agent_id):
+            json_response(self, {"error": "Vendedor IA no encontrado"}, 404)
+            return
         with db() as conn:
-            upsert_lead(conn, agent_id, data.get("conversation_id"), data.get("name", ""), data.get("contact", ""), data.get("intent", ""), data.get("notes", ""))
+            upsert_lead(conn, agent_id, data.get("conversation_id"), clean_message_text(data.get("name", ""), 120), clean_message_text(data.get("contact", ""), 120), clean_message_text(data.get("intent", ""), 120), clean_message_text(data.get("notes", ""), 500))
         json_response(self, {"ok": True})
 
     def update_lead(self, user):
@@ -2632,15 +3137,10 @@ class App(BaseHTTPRequestHandler):
 
     def update_plan(self, user):
         form = parse_form(self.read_body())
-        plans = {
-            "starter": (2, 300),
-            "pro": (10, 3000),
-            "agency": (50, 20000),
-        }
         plan = form.get("plan", "starter")
-        if plan not in plans:
+        if plan not in PLANS:
             plan = "starter"
-        agent_limit, message_limit = plans[plan]
+        agent_limit, message_limit = plan_limits(plan)
         with db() as conn:
             conn.execute(
                 "INSERT INTO subscriptions (user_id,plan,agent_limit,message_limit,status,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET plan=excluded.plan, agent_limit=excluded.agent_limit, message_limit=excluded.message_limit, status=excluded.status",
@@ -2880,19 +3380,17 @@ class App(BaseHTTPRequestHandler):
 
     def page_billing(self, user):
         sub = ensure_subscription(user["id"])
-        plans = [
-            ("starter", "Inicial", "$19", "Para probar con un negocio y empezar a captar oportunidades", "2 vendedores IA", "300 mensajes/mes"),
-            ("pro", "Crecimiento", "$49", "Para negocios que ya reciben consultas y quieren vender más", "10 vendedores IA", "3.000 mensajes/mes"),
-            ("agency", "Agencia", "$149", "Para manejar varios negocios o clientes desde una sola cuenta", "50 vendedores IA", "20.000 mensajes/mes"),
-        ]
         cards = []
-        for key, name, price, desc, agents, messages in plans:
+        for key in PLAN_ORDER:
+            p = PLANS[key]
             active = key == sub["plan"]
+            featured = key == "pro"
             cards.append(f"""
-            <article class="pricing-card {'active' if active else ''}">
+            <article class="pricing-card {'active' if active else ''} {'featured' if featured else ''}">
+              {'<div class="plan-badge">Recomendado</div>' if featured else ''}
               <span>{'Plan actual' if active else 'Disponible'}</span>
-              <h2>{name}</h2><strong>{price}<small>/mes</small></strong>
-              <p>{desc}</p><ul><li>{agents}</li><li>{messages}</li><li>WhatsApp, oportunidades y bandeja comercial incluidos</li></ul>
+              <h2>{p['name']}</h2><strong>${p['price']}<small>/mes</small></strong>
+              <p>{p['tagline']}</p><ul><li>{p['agent_limit']} vendedores IA</li><li>{p['message_limit']:,} mensajes/mes</li><li>WhatsApp, oportunidades y bandeja comercial incluidos</li></ul>
               <form method="post" action="/billing/plan"><input type="hidden" name="plan" value="{key}"><button class="btn {'primary' if not active else ''}">{'Mantener plan' if active else 'Elegir plan'}</button></form>
             </article>
             """)
@@ -3108,6 +3606,143 @@ button,.btn,.nav-pill{background:radial-gradient(160px 70px at 50% -22px,rgba(13
 @media(max-width:900px){.auth-grid,.chat-layout,.builder,.login-grid,.dashboard-grid,.conversation-detail,.sales-grid,.widget-editor,.crm-layout,.public-agent,.pricing-grid,.landing-hero,.landing-grid,.channels-band,.contact-band,.channel-cards{grid-template-columns:1fr}.grid,.stats,.form-grid,.agents-grid,.final-grid{grid-template-columns:1fr}.builder-side{position:static}.topbar,.page-head,.control-hero,.filters{flex-direction:column;align-items:flex-start}.hero-panel h1{font-size:32px}.login-grid .hero-panel{min-height:0;padding:24px}.login-grid .hero-panel h1{font-size:32px}.login-grid .signal-grid{grid-template-columns:1fr;gap:8px}.login-grid .mini-chat{display:none}.login-card{position:static;padding:18px}.bio-shell{border-radius:14px;padding:20px}.bio-shell h1{font-size:28px}.landing-hero{min-height:0;padding:18px 0}.landing-copy h1{font-size:42px}.landing-phone{border-radius:18px}.landing-section h2{font-size:28px}}
 @media(max-width:900px){.infra-map{min-height:auto;display:grid;gap:12px;padding:16px}.infra-map:before,.infra-map:after,.infra-node:before{display:none}.infra-core,.infra-node{position:relative;left:auto!important;right:auto!important;top:auto!important;bottom:auto!important;width:100%;transform:none}.infra-core{min-height:130px}.landing-metrics{grid-template-columns:1fr}}
 .connect-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}.connect-card{padding:22px}.connect-header{display:flex;align-items:center;gap:14px;margin-bottom:14px}.connect-icon{font-size:36px}.connect-steps{display:grid;gap:10px;margin:16px 0}.connect-steps div{display:flex;align-items:flex-start;gap:10px}.connect-steps span{min-width:26px;height:26px;border-radius:999px;background:var(--green);color:white;display:grid;place-items:center;font-size:13px;font-weight:900}.connect-steps p{margin:0;color:var(--muted);font-size:14px;padding-top:3px}.wa-conn-card{display:flex;justify-content:space-between;align-items:center;padding:14px;margin-bottom:10px}.wa-conn-info strong,.wa-conn-info span{display:block}.wa-conn-info span{color:var(--muted);font-size:12px;margin-top:2px}.badge{display:inline-flex;border-radius:999px;padding:5px 9px;font-size:12px;font-weight:900;border:1px solid transparent}.badge.active,.badge-green{background:#d9f8ec;color:#0f6e56;border-color:#93dcc5}.badge.inactive,.badge-gray{background:#e8e8e8;color:#666}.badge-blue{background:#e3f0ff;color:#1a5fa8;border-color:#b3d4f5}.badge-purple{background:#f0e8ff;color:#6b21a8;border-color:#d4b3f5}.alert-warning{background:#fff8e1;border:1px solid #f9c74f;border-radius:8px;padding:12px;color:#7d5a00;font-size:14px;line-height:1.5}.alert{border-radius:8px;padding:10px 12px;font-size:14px}.alert-success{background:#d9f8ec;color:#0f6e56;border:1px solid #93dcc5}.alert-error{background:#ffe4e4;color:#8b1a1a;border:1px solid #f5b3b3}.alert-info{background:#e3f0ff;color:#1a5fa8;border:1px solid #b3d4f5}.admin-table{width:100%;border-collapse:collapse}.admin-table th,.admin-table td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}.admin-table th{background:#e2f2ed;font-weight:900;font-size:13px}.admin-table small{display:block;color:var(--muted);font-size:12px;margin-top:2px}.admin-select{width:auto;min-width:100px;margin:0;padding:6px 8px;font-size:13px}.usage-bar{height:6px;background:#e2f2ed;border-radius:999px;overflow:hidden;margin-bottom:3px;width:100px}.usage-bar div{height:100%;background:var(--green);border-radius:999px}.btn.danger{background:linear-gradient(145deg,#e05050,#b53030)!important;border-color:#f09090!important;color:white!important;min-height:34px;padding:6px 10px;font-size:13px}@media(max-width:900px){.connect-grid,.admin-table{display:block;overflow-x:auto}.connect-grid{grid-template-columns:1fr}}
+
+/* ============================================================
+   v2 — Capa de refinamiento (tipografía, animaciones, demo,
+   onboarding, sparkline). Cargada al final: define el look final.
+   ============================================================ */
+body{font-family:'Inter',system-ui,Segoe UI,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+html{scroll-behavior:smooth}
+h1,h2,h3{letter-spacing:-.02em}
+::selection{background:rgba(34,240,183,.28);color:#04201a}
+/* Scrollbar sutil */
+*{scrollbar-width:thin;scrollbar-color:rgba(34,240,183,.4) transparent}
+*::-webkit-scrollbar{width:9px;height:9px}*::-webkit-scrollbar-thumb{background:rgba(34,240,183,.35);border-radius:999px}*::-webkit-scrollbar-thumb:hover{background:rgba(34,240,183,.6)}
+/* Texto con gradiente para titulares */
+.grad-text{background:linear-gradient(100deg,#37ffbe,#5fd0ff);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}
+/* Animaciones de entrada (pura CSS, siempre terminan visibles) */
+@keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+.reveal{animation:fadeUp .7s cubic-bezier(.2,.7,.2,1) both}
+.reveal:nth-child(2){animation-delay:.05s}.reveal:nth-child(3){animation-delay:.1s}.reveal:nth-child(4){animation-delay:.15s}
+@media (prefers-reduced-motion:reduce){.reveal{animation:none}html{scroll-behavior:auto}}
+/* Cómo funciona */
+.section-sub{margin:-4px 0 18px;font-size:16px;max-width:680px}
+.how-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:18px;counter-reset:step}
+.how-step{position:relative;border:1px solid rgba(95,225,184,.5);border-radius:14px;padding:22px 18px 18px;background:radial-gradient(260px 90px at 50% -18px,rgba(111,255,209,.26),transparent 66%),linear-gradient(145deg,rgba(236,255,248,.96),rgba(195,237,224,.92))}
+.how-num{position:absolute;top:-16px;left:18px;width:34px;height:34px;border-radius:11px;display:grid;place-items:center;font-weight:900;font-size:16px;color:#04201a;background:linear-gradient(145deg,#5dffce,#1eb98a);box-shadow:0 8px 20px rgba(13,140,100,.35)}
+.how-step strong{display:block;font-size:18px;margin:6px 0 6px;color:#06231c}
+.how-step p{color:#1d4a3f;line-height:1.5;font-size:14px;margin:0}
+/* Demo en vivo (landing) */
+.demo-messages{display:flex;flex-direction:column;gap:9px;margin:14px 0;max-height:260px;min-height:150px;overflow:auto;padding-right:4px}
+.demo-msg{max-width:88%;padding:10px 13px;border-radius:15px;font-size:14px;line-height:1.45;animation:fadeUp .35s ease both}
+.demo-msg.bot{align-self:flex-start;background:#eafff7;color:#0b211b;border-bottom-left-radius:5px;box-shadow:0 2px 8px rgba(5,30,23,.12)}
+.demo-msg.user{align-self:flex-end;background:linear-gradient(145deg,#20ba87,#0d7f5e);color:#fff;border-bottom-right-radius:5px}
+.demo-msg.typing{display:inline-flex;gap:5px;align-items:center}
+.demo-msg.typing span{width:7px;height:7px;border-radius:999px;background:#1eb98a;opacity:.5;animation:blink 1.1s infinite}
+.demo-msg.typing span:nth-child(2){animation-delay:.18s}.demo-msg.typing span:nth-child(3){animation-delay:.36s}
+@keyframes blink{0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
+.demo-chips{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px}
+.demo-chips button{min-height:30px;padding:6px 11px;font-size:12px;border-radius:999px;cursor:pointer;background:rgba(255,255,255,.1)!important;border:1px solid rgba(137,255,220,.4)!important;color:#eafff7!important;box-shadow:none!important;text-shadow:none!important}
+.demo-chips button:hover{background:rgba(101,255,208,.2)!important;transform:translateY(-1px)}
+.demo-form{display:flex;gap:8px}
+.demo-form input{margin:0;min-height:44px;border-radius:11px;background:rgba(7,22,18,.55)!important;border:1px solid rgba(137,255,220,.34)!important;color:#f3fffb!important}
+.demo-form input::placeholder{color:rgba(200,240,228,.6)}
+.demo-form button{min-width:48px;min-height:44px;border-radius:11px;font-size:17px;padding:0}
+#demoBadge{display:inline-flex;align-items:center;gap:6px}
+/* Badge "Recomendado" + plan destacado */
+.pricing-card{position:relative}
+.plan-badge{position:absolute;top:-12px;left:50%;transform:translateX(-50%);background:linear-gradient(145deg,#5dffce,#10946c);color:#04201a;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.05em;padding:5px 12px;border-radius:999px;box-shadow:0 8px 20px rgba(13,140,100,.4);white-space:nowrap;z-index:2}
+.pricing-card.featured{transform:scale(1.03)}
+.pricing-card.featured:hover{transform:scale(1.03) translateY(-2px)}
+.plan-feats{list-style:none;padding:0;margin:6px 0;display:grid;gap:7px}
+.plan-feats li{position:relative;padding-left:24px;font-size:14px;color:#173f35!important}
+.plan-feats li:before{content:"✓";position:absolute;left:0;top:0;width:17px;height:17px;border-radius:999px;background:rgba(30,185,138,.18);color:#0d7f5e;font-size:11px;font-weight:900;display:grid;place-items:center}
+/* Onboarding checklist (dashboard nuevo) */
+.onboard{border:1px solid rgba(95,225,184,.55);border-radius:14px;padding:20px;margin-bottom:16px;background:radial-gradient(420px 150px at 20% -28px,rgba(107,255,210,.22),transparent 60%),linear-gradient(145deg,rgba(238,255,249,.97),rgba(202,235,224,.93))}
+.onboard h2{margin:0 0 4px;font-size:20px}
+.onboard>p{margin:0 0 14px;color:#1d4a3f!important}
+.onboard-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.ob-step{display:flex;gap:11px;align-items:flex-start;padding:13px;border-radius:11px;background:rgba(255,255,255,.55);border:1px solid rgba(95,225,184,.4)}
+.ob-step.done{opacity:.62}
+.ob-check{min-width:26px;height:26px;border-radius:999px;display:grid;place-items:center;font-weight:900;font-size:13px;background:#dfeeea;color:#5c7d74}
+.ob-step.done .ob-check{background:linear-gradient(145deg,#5dffce,#1eb98a);color:#04201a}
+.ob-step strong{display:block;font-size:14px;color:#06231c}
+.ob-step span{display:block;font-size:12px;color:#3d6b5c;margin-top:2px}
+.ob-step a{display:inline-block;margin-top:6px;font-size:12px;font-weight:800;color:#0d7f5e}
+/* Hero metric + sparkline */
+.kpi-hero{display:grid;grid-template-columns:1.1fr 2fr;gap:14px;margin-bottom:16px}
+.kpi-spark{border:1px solid rgba(95,225,184,.5);border-radius:14px;padding:18px;background:linear-gradient(145deg,rgba(238,255,249,.96),rgba(202,235,224,.92))}
+.kpi-spark h3{margin:0 0 2px;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#0a7456!important}
+.kpi-spark .big{font-size:34px;font-weight:900;color:#06231c;letter-spacing:-.02em}
+.kpi-spark .sub{font-size:12px;color:#3d6b5c}
+.spark-wrap{margin-top:6px}
+.spark-wrap svg{width:100%;height:64px;display:block;overflow:visible}
+.spark-line{fill:none;stroke:url(#sg);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+.spark-area{fill:url(#sa);opacity:.9}
+.trend-up{color:#0d7f5e;font-weight:800}.trend-down{color:#a84444;font-weight:800}
+@media(max-width:900px){.how-grid,.onboard-steps{grid-template-columns:1fr}.kpi-hero{grid-template-columns:1fr}.pricing-card.featured{transform:none}.pricing-card.featured:hover{transform:translateY(-2px)}}
+
+/* ============================================================
+   LOGIN STAGE — la primera pantalla, con objetos cobrando vida
+   ============================================================ */
+.auth-stage{position:relative;padding:6px 0 48px;isolation:isolate;perspective:1400px}
+.stage-aurora{position:absolute;inset:-25% -12% -10%;z-index:-3;pointer-events:none;background:radial-gradient(38% 48% at 18% 22%,rgba(34,240,183,.55),transparent 62%),radial-gradient(34% 42% at 82% 14%,rgba(53,167,255,.42),transparent 62%),radial-gradient(46% 56% at 62% 86%,rgba(93,255,206,.4),transparent 62%);filter:blur(46px);animation:auroraShift 20s ease-in-out infinite alternate}
+@keyframes auroraShift{0%{transform:translate3d(0,0,0) scale(1);opacity:.85}50%{transform:translate3d(4%,2%,0) scale(1.1);opacity:1}100%{transform:translate3d(-4%,-2%,0) scale(1.05);opacity:.9}}
+.stage-grid{position:absolute;inset:0;z-index:-3;pointer-events:none;background:linear-gradient(90deg,rgba(34,240,183,.07) 1px,transparent 1px),linear-gradient(0deg,rgba(53,167,255,.06) 1px,transparent 1px);background-size:46px 46px;mask-image:radial-gradient(70% 60% at 50% 40%,#000,transparent 85%);animation:gridDrift 16s linear infinite}
+@keyframes gridDrift{from{background-position:0 0,0 0}to{background-position:46px 46px,46px 46px}}
+.stage-orbs .orb{position:absolute;border-radius:999px;z-index:-2;pointer-events:none;background:radial-gradient(circle at 32% 30%,rgba(180,255,236,.95),rgba(34,240,183,.28) 58%,transparent 72%);box-shadow:0 0 46px rgba(34,240,183,.45);opacity:.6}
+.orb.o1{width:118px;height:118px;left:4%;top:16%;animation:orbFloatA 13s ease-in-out infinite}
+.orb.o2{width:66px;height:66px;right:10%;top:34%;animation:orbFloatB 10s ease-in-out infinite}
+.orb.o3{width:40px;height:40px;left:46%;bottom:6%;animation:orbFloatA 17s ease-in-out infinite reverse}
+.orb.o4{width:24px;height:24px;left:30%;top:8%;animation:orbFloatB 8s ease-in-out infinite}
+@keyframes orbFloatA{0%,100%{transform:translate(0,0)}50%{transform:translate(16px,-28px)}}
+@keyframes orbFloatB{0%,100%{transform:translate(0,0)}50%{transform:translate(-14px,24px)}}
+.stage-glow{position:absolute;width:420px;height:420px;border-radius:999px;z-index:-2;pointer-events:none;left:0;top:0;transform:translate(-50%,-50%);background:radial-gradient(circle,rgba(34,240,183,.16),transparent 68%);opacity:0;transition:opacity .4s ease}
+.auth-stage:hover .stage-glow{opacity:1}
+/* Hero de login */
+.login-hero{position:relative;overflow:visible!important;animation:fadeUp .8s cubic-bezier(.2,.7,.2,1) both}
+.login-hero h1{font-size:clamp(34px,3.8vw,52px);line-height:1.04;margin:8px 0 14px}
+.login-hero .hero-copy{font-size:17px;max-width:560px}
+/* Notificaciones de actividad que flotan */
+.live-feed{position:absolute;right:16px;top:64px;width:236px;height:54%;z-index:6;pointer-events:none}
+.live-pill{position:absolute;right:0;top:60%;display:flex;align-items:center;gap:10px;background:rgba(7,20,17,.86);border:1px solid rgba(101,255,208,.42);border-radius:13px;padding:9px 13px 9px 9px;color:#eafff7;font-size:12px;font-weight:800;box-shadow:0 14px 36px rgba(0,0,0,.36),0 0 22px rgba(34,240,183,.18);backdrop-filter:blur(10px);white-space:nowrap;animation:pillRise 5.4s cubic-bezier(.2,.7,.2,1) forwards}
+.live-pill i{width:26px;height:26px;border-radius:9px;display:grid;place-items:center;background:rgba(34,240,183,.2);font-style:normal;font-size:14px}
+.live-pill b{display:block;font-weight:900;font-size:12.5px}
+.live-pill small{display:block;color:#9fe7d3;font-weight:600;font-size:10.5px;margin-top:1px}
+@keyframes pillRise{0%{opacity:0;transform:translateY(46px) scale(.86)}14%{opacity:1;transform:translateY(0) scale(1)}82%{opacity:1;transform:translateY(-6px) scale(1)}100%{opacity:0;transform:translateY(-40px) scale(.98)}}
+/* Chat vivo (se escribe solo) */
+.live-chat{margin-top:20px;max-width:520px;border:1px solid rgba(101,255,208,.32);background:linear-gradient(180deg,rgba(8,22,18,.82),rgba(5,14,12,.82));border-radius:18px;overflow:hidden;box-shadow:0 0 44px rgba(34,240,183,.12),0 24px 60px rgba(0,0,0,.32)}
+.lc-head{display:flex;align-items:center;gap:10px;padding:12px 15px;border-bottom:1px solid rgba(148,205,188,.2);color:#f3fffb!important;font-size:13px;font-weight:800}
+.lc-head .lc-dot{width:9px;height:9px;border-radius:999px;background:#65ffd0;box-shadow:0 0 12px #22f0b7;animation:livePulse 1.6s ease-in-out infinite}
+.lc-head em{margin-left:auto;font-style:normal;font-size:11px;color:#9fe7d3!important;font-weight:700}
+@keyframes livePulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.82)}}
+.lc-body{padding:15px;display:flex;flex-direction:column;gap:9px;min-height:184px}
+.lc-msg{max-width:84%;padding:9px 13px;border-radius:15px;font-size:13.5px;line-height:1.42;animation:bubbleIn .4s cubic-bezier(.2,.8,.2,1) both;box-shadow:0 3px 10px rgba(0,0,0,.14)}
+.lc-msg.bot{align-self:flex-start;background:#eafff7;color:#0b211b!important;border-bottom-left-radius:5px}
+.lc-msg.user{align-self:flex-end;background:linear-gradient(145deg,#22c08c,#0d7f5e);color:#fff!important;border-bottom-right-radius:5px}
+.lc-msg.typing{display:inline-flex;gap:5px;align-items:center}
+.lc-msg.typing span{width:6px;height:6px;border-radius:999px;background:#1eb98a;animation:blink 1.1s infinite}
+.lc-msg.typing span:nth-child(2){animation-delay:.18s}.lc-msg.typing span:nth-child(3){animation-delay:.36s}
+@keyframes bubbleIn{from{opacity:0;transform:translateY(10px) scale(.95)}to{opacity:1;transform:none}}
+/* Contadores de confianza */
+.trust-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px;max-width:520px}
+.trust-stats div{text-align:center;border:1px solid rgba(101,255,208,.26);background:rgba(8,23,19,.52);border-radius:13px;padding:13px 8px}
+.trust-stats strong{display:block;font-size:25px;font-weight:900;color:#7dffda!important;letter-spacing:-.02em}
+.trust-stats span{font-size:11px;color:#bde7db!important;text-transform:uppercase;letter-spacing:.05em;font-weight:700}
+/* Tarjeta con tilt 3D + brillo */
+.login-card{position:relative;overflow:hidden;transform-style:preserve-3d;transition:transform .25s cubic-bezier(.2,.7,.2,1),box-shadow .25s ease;animation:fadeUp .8s cubic-bezier(.2,.7,.2,1) .12s both}
+.login-card .lc-shine{position:absolute;inset:0;pointer-events:none;background:radial-gradient(360px 200px at var(--mx,50%) var(--my,0%),rgba(255,255,255,.4),transparent 60%);opacity:.5;transition:opacity .25s ease}
+.card-tabs{display:flex;gap:6px;background:rgba(8,30,24,.06);border:1px solid rgba(95,225,184,.3);border-radius:12px;padding:5px;margin-bottom:16px}
+.ct-btn{flex:1;min-height:38px;border-radius:9px!important;background:transparent!important;border:0!important;box-shadow:none!important;color:#0d5c46!important;font-weight:900;text-shadow:none!important;cursor:pointer;transition:.2s}
+.ct-btn.active{background:linear-gradient(145deg,#22c08c,#0d7f5e)!important;color:#fff!important;box-shadow:0 6px 18px rgba(13,127,94,.3)!important}
+.auth-form{animation:bubbleIn .35s ease both}
+.auth-form[hidden]{display:none}
+.auth-form .btn{width:100%;margin-top:4px}
+.form-foot{margin:4px 0 0;font-size:13px;text-align:center;color:#3d6b5c!important}
+.form-foot a{color:#0d7f5e!important;font-weight:800;text-decoration:underline}
+.card-assure{margin-top:14px;padding-top:13px;border-top:1px solid rgba(95,225,184,.3);text-align:center;font-size:12px;color:#3d6b5c!important;font-weight:700}
+@media (prefers-reduced-motion:reduce){.stage-aurora,.stage-grid,.orb,.lc-dot,.live-pill{animation:none!important}.live-feed{display:none}}
+@media(max-width:900px){.live-feed{display:none}.login-hero{overflow:hidden!important}.login-card{transform:none!important}.live-chat,.trust-stats{max-width:none}}
 """
 
 
@@ -3144,15 +3779,93 @@ let chatMessages=[];let conversationId=null;
 function addMsg(role,text){const chat=document.getElementById('chat');const div=document.createElement('div');div.className='msg '+role;div.textContent=text;chat.appendChild(div);chat.scrollTop=chat.scrollHeight}
 function quickAsk(text){document.getElementById('chatInput').value=text;document.getElementById('chatForm').requestSubmit()}
 async function sendMessage(event,agentId){event.preventDefault();const input=document.getElementById('chatInput');const form=document.getElementById('chatForm');const text=input.value.trim();if(!text)return;input.value='';if(form)form.querySelector('button').disabled=true;addMsg('user',text);chatMessages.push({role:'user',content:text});addMsg('bot','Escribiendo...');const pending=document.querySelector('#chat .msg.bot:last-child');try{const res=await fetch('/api/agent-chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent_id:agentId,conversation_id:conversationId,messages:chatMessages})});const data=await res.json();conversationId=data.conversation_id;pending.textContent=data.reply||'No pude responder ahora. Revisa la configuración e intenta de nuevo.';chatMessages.push({role:'assistant',content:pending.textContent});if(data.lead_created)toast('Oportunidad detectada')}catch(e){pending.textContent='No pude conectar con el vendedor IA en este momento. Intenta nuevamente en unos segundos.'}finally{if(form)form.querySelector('button').disabled=false;input.focus()}}
+/* Demo en vivo de la landing */
+let demoHistory=[];let demoBusy=false;
+function demoAdd(role,text){const box=document.getElementById('demoMessages');if(!box)return null;const p=document.createElement('p');p.className='demo-msg '+role;p.textContent=text;box.appendChild(p);box.scrollTop=box.scrollHeight;return p}
+function demoQuick(text){const i=document.getElementById('demoInput');if(i)i.value=text;sendDemo(new Event('submit'))}
+async function sendDemo(event){if(event&&event.preventDefault)event.preventDefault();if(demoBusy)return false;const input=document.getElementById('demoInput');const text=(input?.value||'').trim();if(!text)return false;if(input)input.value='';demoBusy=true;demoAdd('user',text);demoHistory.push({role:'user',content:text});const badge=document.getElementById('demoBadge');if(badge)badge.textContent='escribiendo…';const pending=demoAdd('bot','');if(pending)pending.classList.add('typing'),pending.innerHTML='<span></span><span></span><span></span>';try{const res=await fetch('/api/demo-chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:demoHistory.slice(-10)})});const data=await res.json();const reply=data.reply||'Gracias por escribir. ¿Quieres que te ayude a cotizar o agendar?';if(pending){pending.classList.remove('typing');pending.textContent=reply}demoHistory.push({role:'assistant',content:reply})}catch(e){if(pending){pending.classList.remove('typing');pending.textContent='No pude responder ahora mismo. Vuelve a intentarlo en unos segundos.'}}finally{demoBusy=false;if(badge)badge.textContent='en línea';if(input)input.focus()}return false}
+/* Animaciones de entrada al hacer scroll */
+document.addEventListener('DOMContentLoaded',function(){const els=document.querySelectorAll('.reveal');if(!('IntersectionObserver'in window)||!els.length){els.forEach(e=>e.classList.add('in'));return}const io=new IntersectionObserver((entries)=>{entries.forEach(en=>{if(en.isIntersecting){en.target.classList.add('in');io.unobserve(en.target)}})},{threshold:0.12});els.forEach(e=>io.observe(e))});
+
+/* ====== LOGIN: objetos cobrando vida ====== */
+function _sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+function initLogin(){
+  const card=document.getElementById('loginCard');if(!card)return;
+  const reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Tabs Entrar / Crear cuenta
+  function showTab(name){
+    document.querySelectorAll('.ct-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+    document.querySelectorAll('.auth-form').forEach(f=>{f.hidden=f.dataset.form!==name});
+  }
+  document.querySelectorAll('.ct-btn').forEach(b=>b.addEventListener('click',()=>showTab(b.dataset.tab)));
+  document.querySelectorAll('[data-goto]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();showTab(a.dataset.goto)}));
+  // Contadores
+  document.querySelectorAll('.trust-stats strong[data-count]').forEach(el=>{
+    const target=parseInt(el.dataset.count,10)||0;const suf=el.dataset.suffix||'';const dur=1100;const t0=performance.now();
+    function step(t){const p=Math.min(1,(t-t0)/dur);const e=1-Math.pow(1-p,3);el.textContent=Math.round(target*e)+suf;if(p<1)requestAnimationFrame(step)}
+    requestAnimationFrame(step);
+  });
+  // Tilt 3D + brillo del cursor sobre la tarjeta
+  if(!reduce){
+    card.addEventListener('mousemove',e=>{const r=card.getBoundingClientRect();const px=(e.clientX-r.left)/r.width;const py=(e.clientY-r.top)/r.height;card.style.transform=`rotateY(${(px-.5)*7}deg) rotateX(${(.5-py)*7}deg) translateY(-2px)`;card.style.setProperty('--mx',(px*100)+'%');card.style.setProperty('--my',(py*100)+'%')});
+    card.addEventListener('mouseleave',()=>{card.style.transform=''});
+    const stage=document.getElementById('authStage');const glow=document.getElementById('stageGlow');
+    if(stage&&glow)stage.addEventListener('mousemove',e=>{const r=stage.getBoundingClientRect();glow.style.left=(e.clientX-r.left)+'px';glow.style.top=(e.clientY-r.top)+'px'});
+  }
+  // Notificaciones de actividad flotantes
+  const feed=document.getElementById('liveFeed');
+  const pills=[['🎯','Nueva oportunidad','Studio Corte · ahora'],['📅','Cliente agendó','Aura Clínica · ahora'],['💬','Consulta respondida','Urban Market'],['💰','Cotización enviada','Nexo Propiedades'],['📲','Derivado a WhatsApp','La Mesa Viva'],['✅','Venta ganada','Veterinaria Pelitos'],['🔥','Lead caliente detectado','Barbería Studio']];
+  let pi=0;
+  function spawnPill(){
+    if(!feed||reduce)return;
+    const d=pills[pi%pills.length];pi++;
+    const el=document.createElement('div');el.className='live-pill';
+    el.innerHTML='<i>'+d[0]+'</i><div><b>'+d[1]+'</b><small>'+d[2]+'</small></div>';
+    el.style.top=(15+Math.random()*55)+'%';
+    feed.appendChild(el);
+    setTimeout(()=>el.remove(),5400);
+  }
+  if(feed&&!reduce){setTimeout(spawnPill,900);setInterval(spawnPill,2600);}
+  // Chat que se escribe solo
+  const body=document.getElementById('lcBody');const status=document.getElementById('lcStatus');
+  const script=[['bot','¡Hola! Soy Luna 🌿 ¿En qué te ayudo hoy?'],['user','Hola, ¿cuánto cuesta una consulta?'],['bot','La consulta general está en $18.000. ¿Para qué mascota sería?'],['user','Para mi perro 🐶 ¿tienen hora mañana?'],['bot','¡Sí! Mañana tengo 10:30 y 16:00. ¿Cuál te acomoda?'],['user','La de las 16:00 🙌'],['bot','Listo, te dejo agendado. Te confirmo por WhatsApp 📲']];
+  function addBubble(role,text){const p=document.createElement('div');p.className='lc-msg '+role;p.textContent=text;body.appendChild(p);while(body.children.length>4)body.firstChild.remove();return p}
+  async function runChat(){
+    if(!body)return;
+    while(true){
+      body.innerHTML='';
+      for(const [role,text] of script){
+        if(role==='bot'){
+          if(status)status.textContent='escribiendo…';
+          const typing=document.createElement('div');typing.className='lc-msg bot typing';typing.innerHTML='<span></span><span></span><span></span>';body.appendChild(typing);
+          await _sleep(reduce?300:Math.min(1600,700+text.length*16));
+          typing.remove();if(status)status.textContent='en línea';
+          addBubble('bot',text);
+        }else{
+          addBubble('user',text);
+        }
+        await _sleep(reduce?500:1050);
+      }
+      await _sleep(reduce?1200:2600);
+    }
+  }
+  runChat();
+}
+document.addEventListener('DOMContentLoaded',initLogin);
 """
+
+
+ASSET_VERSION = hashlib.md5((CSS + JS + ADMIN_CSS).encode("utf-8")).hexdigest()[:8]
 
 
 def main():
     init_db()
+    start_backup_thread()
     port = int(os.environ.get("PORT", "8765"))
     host = os.environ.get("HOST", "0.0.0.0")
     server = ThreadingHTTPServer((host, port), App)
     print(f"{APP_NAME} listo en http://localhost:{port}")
+    print(f"Datos en: {DATA_DIR}")
     server.serve_forever()
 
 
